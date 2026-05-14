@@ -1,6 +1,6 @@
 ---
 title: HuggingMes Hermes WebUI
-emoji: ??
+emoji: 🪽
 colorFrom: blue
 colorTo: indigo
 sdk: docker
