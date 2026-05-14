@@ -22,17 +22,11 @@ This repo just glues them together so both UIs share one port, one auth token, a
 
 ---
 
-## Try it in 30 seconds
-
-I keep a live demo at [huggingface.co/spaces/f4b404/hermes](https://huggingface.co/spaces/f4b404/hermes). Click **Duplicate this Space** at the top right to fork it into your own account.
-
-After duplicating, you only need to set 3 secrets to get running. See the next section.
-
 ## Setting up your own Space
 
 ### 1. Duplicate the Space
 
-Go to [huggingface.co/spaces/f4b404/hermes](https://huggingface.co/spaces/f4b404/hermes) → click the **⋮** menu (top-right corner) → **Duplicate this Space**. Name it whatever you want, pick CPU basic free hardware, decide public/private. HF copies all files automatically.
+Go to [![Duplicate this Space](https://huggingface.co/datasets/huggingface/badges/resolve/main/duplicate-this-space-xl.svg)](https://huggingface.co/spaces/f4b404/hermes?duplicate=true) → click the **⋮** menu (top-right corner) → **Duplicate this Space**. Name it whatever you want, pick CPU basic free hardware, decide public/private. HF copies all files automatically.
 
 If you'd rather start from this repo, create a new Space with **SDK = Docker** at [huggingface.co/new-space](https://huggingface.co/new-space) and upload everything in this repo to its `main` branch.
 
