@@ -17,8 +17,6 @@ RUN curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/${HERMES_CO
 
 # Override package-default .hermes with committed config, hooks, and skills only (NOT runtime state)
 COPY --chown=hermes:hermes .hermes/config.yaml /home/hermes/.hermes/config.yaml
-COPY --chown=hermes:hermes .hermes/hooks/ /home/hermes/.hermes/hooks/
-COPY --chown=hermes:hermes .hermes/skills/ /home/hermes/.hermes/skills/
 COPY --chown=hermes:hermes agents/ /home/hermes/app/agents/
 
 USER hermes

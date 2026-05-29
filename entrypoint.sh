@@ -2,14 +2,17 @@
 set -euo pipefail
 umask 077
 
-log()  { echo "[entrypoint] $*"; }
+log() { echo "[entrypoint] $*"; }
 warn() { echo "[entrypoint] WARN: $*" >&2; }
-die()  { echo "[entrypoint] FATAL: $*" >&2; exit 1; }
+die() {
+	echo "[entrypoint] FATAL: $*" >&2
+	exit 1
+}
 
 # Platforms inject their own PORT (Render); HF/local default to 7860.
 PORT="${PORT:-7860}"
 
-# Start health check FIRST, before anything else (HF/Render need a live port immediately)
+# HF/Render need a live port before anything else boots
 HEALTH_PORT="$PORT" python3 -c "
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -43,6 +46,15 @@ if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
 else
 	AGENT_NAME="${AGENT_NAME:-$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])" 2>/dev/null || echo "agent-$$")}"
 fi
+
+# Normalize to lowercase so AGENT_NAME is case-insensitive (Ritesh/RITESH -> ritesh). The
+# agents/ dirs and the /data/<name> scope below all use this one canonical form, so a state
+# dir is never split across cases. Assert the agent exists now for a clear, early error.
+AGENT_NAME="$(printf '%s' "$AGENT_NAME" | tr '[:upper:]' '[:lower:]')"
+if [ ! -d "$APP_DIR/agents/$AGENT_NAME" ]; then
+	available="$(cd "$APP_DIR/agents" 2>/dev/null && for d in */; do printf '%s ' "${d%/}"; done)"
+	die "unknown agent '$AGENT_NAME' — no agents/$AGENT_NAME/. Available: ${available:-<none>}"
+fi
 log "Agent instance: $AGENT_NAME"
 
 HERMES_DATA="/data/${AGENT_NAME}/.hermes"
@@ -67,13 +79,13 @@ else
 	cd "$APP_DIR"
 fi
 
-# Select the SOUL for this agent from the baked agents/<name>/soul.md
 SOUL_SRC="$APP_DIR/agents/${AGENT_NAME}/soul.md"
 [ -f "$SOUL_SRC" ] || die "no soul at agents/${AGENT_NAME}/soul.md"
 cp "$SOUL_SRC" "$HOME/.hermes/SOUL.md"
 log "Loaded SOUL for ${AGENT_NAME}"
 
-# Layer per-agent NON-secret overrides (TELEGRAM_BASE_URL, AGENT_PERSONALITY, ...)
+# Layer per-agent NON-secret overrides (TELEGRAM_BASE_URL, AGENT_PERSONALITY, ...).
+# Secrets stay in repo-root .env or platform secrets — NEVER in agent.env.
 AGENT_ENV="$APP_DIR/agents/${AGENT_NAME}/agent.env"
 if [ -f "$AGENT_ENV" ]; then
 	set -a && . "$AGENT_ENV" && set +a
@@ -114,7 +126,6 @@ for _ in 1 2 3 4 5; do
 done
 log "SSH: ${SSH_URL:-tmate failed to connect}"
 
-# Provider defaults
 if [ -n "${HF_TOKEN:-}" ]; then
 	hermes model set-provider hf --default || warn "HF provider config failed (continuing)"
 fi
@@ -169,16 +180,37 @@ else
 	warn "No GEMINI_API_KEYS or GEMINI_API_KEY set — Gemini pool is empty"
 fi
 
-# Round-robin across the pooled Gemini keys
-hermes config set credential_pool_strategies.gemini round_robin \
-	|| warn "Gemini round-robin strategy config failed (continuing)"
+hermes config set credential_pool_strategies.gemini round_robin ||
+	warn "Gemini round-robin strategy config failed (continuing)"
 
-# Telegram proxy (HF blocks api.telegram.org). Two mechanisms, both kept:
-# 1) native base_url passed to the bot client; 2) legacy sed-patch of installed package files.
+# Default model + provider. The /data symlink shadows the baked config.yaml, so the persisted
+# config starts with model='' and no provider — set both each boot. Provider MUST be explicit:
+# our keys live in the auth pool (auth.json), not env, so without `provider=gemini` Hermes
+# raises "No inference provider configured". Override per-agent via AGENT_MODEL/AGENT_PROVIDER.
+AGENT_MODEL="${AGENT_MODEL:-gemini-flash-lite-latest}"
+AGENT_PROVIDER="${AGENT_PROVIDER:-gemini}"
+hermes config set model "$AGENT_MODEL" &&
+	log "model -> $AGENT_MODEL" ||
+	warn "model config failed (continuing)"
+hermes config set provider "$AGENT_PROVIDER" &&
+	log "provider -> $AGENT_PROVIDER" ||
+	warn "provider config failed (continuing)"
+
+# Telegram proxy (HF/Render block api.telegram.org). The bot client honors extra.base_url and
+# routes every call — including the getUpdates long-poll — through the Cloudflare Worker.
 TELEGRAM_BASE_URL="${TELEGRAM_BASE_URL:-https://hermes.22f2001388.workers.dev/bot}"
-hermes config set gateway.platforms.telegram.extra.base_url "$TELEGRAM_BASE_URL" \
-	&& log "telegram base_url -> $TELEGRAM_BASE_URL" \
-	|| warn "telegram base_url config failed (continuing)"
+hermes config set gateway.platforms.telegram.extra.base_url "$TELEGRAM_BASE_URL" &&
+	log "telegram base_url -> $TELEGRAM_BASE_URL" ||
+	warn "telegram base_url config failed (continuing)"
+
+# On cloud, force-disable the IP-fallback transport. Hermes auto-discovers Telegram datacenter
+# IPs and attaches a transport that dials api.telegram.org directly (telegram.py:1535), which
+# overrides base_url and hangs where the host is blocked. Disabling it leaves a plain client that
+# respects base_url. Local is untouched: it reaches api.telegram.org fine and keeps the fallback.
+if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
+	export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true
+	log "Telegram IP-fallback disabled (base_url-only routing on $PLATFORM)"
+fi
 
 if [ -n "${TELEGRAM_PROXY_HOST:-}" ]; then
 	SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "/usr/local/lib/python3.11/site-packages")
@@ -187,15 +219,14 @@ if [ -n "${TELEGRAM_PROXY_HOST:-}" ]; then
 	log "Telegram proxy (sed-patch) configured: $TELEGRAM_PROXY_HOST"
 fi
 
-# Telegram bot token + allowlists are env-only in Hermes (no config keys).
-# They are read from the environment we already sourced above — log presence, never values.
+# Telegram bot token + allowlists are env-only in Hermes (no config keys) — log presence, never values.
 [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || warn "TELEGRAM_BOT_TOKEN unset — Telegram gateway cannot start"
 log "Telegram allowlist: users=$([ -n "${TELEGRAM_ALLOWED_USERS:-}" ] && echo set || echo unset), home_channel=$([ -n "${TELEGRAM_HOME_CHANNEL:-}" ] && echo set || echo unset)"
 
-# Optional per-agent personality (real config key)
+# Optional per-agent personality (real config key — unlike the phantom telegram.* keys)
 if [ -n "${AGENT_PERSONALITY:-}" ]; then
-	hermes config set display.personality "$AGENT_PERSONALITY" \
-		|| warn "display.personality config failed (continuing)"
+	hermes config set display.personality "$AGENT_PERSONALITY" ||
+		warn "display.personality config failed (continuing)"
 fi
 
 log "Starting Hermes gateway (autonomous mode)..."
