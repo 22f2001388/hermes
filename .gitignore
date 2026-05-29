@@ -1,8 +1,6 @@
 # Secrets
 .env
 
-# Hermes runtime
-.hermes/
 
 # OS junk
 .DS_Store
@@ -12,3 +10,19 @@ Thumbs.db
 *.tmp
 *.swp
 *.swo
+
+state.db-shm
+state.db-wal
+state.db
+
+skills
+bin
+
+sessions
+logs
+kanban.db*
+auth.json
+config.yaml
+node_modules
+models_dev_cache.json
+node

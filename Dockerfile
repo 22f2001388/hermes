@@ -7,14 +7,16 @@ LABEL org.opencontainers.image.source="https://github.com/NousResearch/hermes-ag
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tmate \
-    openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash hermes
 
-ARG HERMES_COMMIT=main
+ARG HERMES_COMMIT=v2026.5.29.2
 RUN curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/${HERMES_COMMIT}.tar.gz" -o /tmp/hermes.tar.gz \
     && pip install --no-cache-dir "/tmp/hermes.tar.gz[messaging]" \
     && rm /tmp/hermes.tar.gz
+
+# Override package-default .hermes with committed customization (config, hooks, skills, etc.)
+COPY --chown=hermes:hermes .hermes /home/hermes/.hermes/
 
 USER hermes
 WORKDIR /home/hermes/app
@@ -24,7 +26,7 @@ COPY --chown=hermes:hermes entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD pgrep -f "hermes" > /dev/null || exit 1
+    CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7860/').status==200 else 1)" 2>/dev/null || exit 1
 
 EXPOSE 7860
 ENTRYPOINT ["./entrypoint.sh"]

@@ -8,6 +8,8 @@ pinned: false
 license: apache-2.0
 ---
 
+test
+
 # Hermes Agent
 
 Hugging Face Space running [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) with a Telegram gateway and Gemini backend.
@@ -16,13 +18,17 @@ Hugging Face Space running [NousResearch/hermes-agent](https://github.com/NousRe
 
 | Variable | Description |
 |---|---|
+| `AGENT_NAME` | Agent identity, selects the `.soul` persona (required on HF Spaces) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (from BotFather) |
+| `TELEGRAM_ALLOWED_CHATS` | Comma-separated chat IDs the bot responds to |
 | `GEMINI_API_KEY` | Google Gemini API key (up to 5 keys supported: `_1` through `_4`) |
 | `HF_TOKEN` | (Optional) Hugging Face token for HF provider |
 
 ## Deployment
 
-Push to a Hugging Face Space with `sdk: docker`. The Space auto-builds and runs the container.
+See [HF_DEPLOY.md](./HF_DEPLOY.md) for the full multi-agent deployment guide.
+
+For a single-agent setup: push to a Hugging Face Space with `sdk: docker`. The Space auto-builds and runs the container.
 
 ## Local Development
 

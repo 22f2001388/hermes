@@ -30,13 +30,30 @@ echo "Detected platform: $PLATFORM"
 PORT="${PORT:-7860}"
 
 PERSIST_DIR="/data"
-HERMES_DATA="/data/.hermes"
-WORKSPACE_DATA="/data/workspace"
+
+# AGENT_NAME guard: required for cloud deployments, random fallback for local
+if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
+	if [ -z "${AGENT_NAME:-}" ]; then
+		echo "FATAL: AGENT_NAME is required on $PLATFORM. Set it via Space secrets or environment variable."
+		exit 1
+	fi
+else
+	AGENT_NAME="${AGENT_NAME:-$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])" 2>/dev/null || echo "agent-$$")}"
+fi
+echo "Agent instance: $AGENT_NAME"
+
+HERMES_DATA="/data/${AGENT_NAME}/.hermes"
+WORKSPACE_DATA="/data/${AGENT_NAME}/workspace"
 
 command -v hermes >/dev/null 2>&1 || {
 	echo "hermes binary not found"
 	exit 1
 }
+
+# Stash baked souls before /data symlink shadows $HOME/.hermes
+if [ -d "$HOME/.hermes/souls" ]; then
+	cp -r "$HOME/.hermes/souls" /tmp/souls 2>/dev/null || true
+fi
 
 if [ -d "$HOME/.hermes" ] && [ ! -L "$HOME/.hermes" ]; then
 	echo "Bind-mounted .hermes detected at $HOME/.hermes — syncing live with host"
@@ -54,6 +71,16 @@ else
 	echo "No /data found -- running on ephemeral storage"
 	mkdir -p "$HOME/.hermes"
 	cd "$HOME/app"
+fi
+
+# Select SOUL for this agent from baked souls
+SOUL_FILE="/tmp/souls/${AGENT_NAME}.soul"
+if [ -f "$SOUL_FILE" ]; then
+	cp "$SOUL_FILE" "$HOME/.hermes/SOUL.md"
+	echo "Loaded SOUL: ${AGENT_NAME}.soul"
+else
+	echo "FATAL: No soul file found for AGENT_NAME=$AGENT_NAME (expected /tmp/souls/${AGENT_NAME}.soul)"
+	exit 1
 fi
 
 if [ "$PLATFORM" = "local" ]; then
@@ -111,20 +138,24 @@ if [ -n "${TELEGRAM_PROXY_HOST:-}" ]; then
 	echo "Telegram proxy configured: $TELEGRAM_PROXY_HOST"
 fi
 
-case "$PLATFORM" in
-hf)
-	exec sleep infinity
-	;;
-render | local)
-	echo "Starting Hermes gateway (autonomous mode)..."
-	while true; do
-		if hermes gateway run; then
-			echo "Hermes exited cleanly."
-			exit 0
-		else
-			echo "Hermes crashed (exit $?). Respawning in 5s..."
-			sleep 5
-		fi
-	done
-	;;
-esac
+# Per-agent config injection from environment
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+	hermes config set telegram.token "$TELEGRAM_BOT_TOKEN" || echo "Warning: telegram.token config failed (continue)"
+fi
+if [ -n "${TELEGRAM_ALLOWED_CHATS:-}" ]; then
+	hermes config set telegram.allowed_chats "$TELEGRAM_ALLOWED_CHATS" || echo "Warning: telegram.allowed_chats config failed (continue)"
+fi
+if [ -n "${AGENT_PERSONALITY:-}" ]; then
+	hermes config set display.personality "$AGENT_PERSONALITY" || echo "Warning: display.personality config failed (continue)"
+fi
+
+echo "Starting Hermes gateway (autonomous mode)..."
+while true; do
+	if hermes gateway run; then
+		echo "Hermes exited cleanly."
+		exit 0
+	else
+		echo "Hermes crashed (exit $?). Respawning in 5s..."
+		sleep 5
+	fi
+done
