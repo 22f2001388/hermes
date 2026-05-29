@@ -4,28 +4,31 @@ LABEL org.opencontainers.image.source="https://github.com/NousResearch/hermes-ag
       org.opencontainers.image.description="Hermes Agent - Telegram Gateway for Hugging Face Spaces" \
       org.opencontainers.image.licenses="Apache-2.0"
 
+# ── system packages + non-root user ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tmate \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash hermes
 
+# ── install hermes ────────────────────────────────────────────────────────────
 ARG HERMES_COMMIT=v2026.5.29.2
 RUN curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/${HERMES_COMMIT}.tar.gz" -o /tmp/hermes.tar.gz \
     && pip install --no-cache-dir "/tmp/hermes.tar.gz[messaging]" \
     && rm /tmp/hermes.tar.gz
 
-# Override package-default .hermes with committed config, hooks, and skills only (NOT runtime state)
-COPY --chown=hermes:hermes .hermes/config.yaml /home/hermes/.hermes/config.yaml
-COPY --chown=hermes:hermes agents/ /home/hermes/app/agents/
-
+# ── runtime identity ──────────────────────────────────────────────────────────
 USER hermes
 WORKDIR /home/hermes/app
 ENV PATH="/home/hermes/.local/bin:${PATH}"
 
-COPY --chown=hermes:hermes entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# ── baked assets: static config and agent definitions (NOT runtime state) ─────
+COPY --chown=hermes:hermes .hermes/config.yaml /home/hermes/.hermes/config.yaml
+COPY --chown=hermes:hermes agents/ /home/hermes/app/agents/
+COPY --chown=hermes:hermes --chmod=0755 entrypoint.sh .
 
+# ── health probe + service port ───────────────────────────────────────────────
+# Polls the in-process health server started in entrypoint.sh before the gateway boots.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7860/').status==200 else 1)" 2>/dev/null || exit 1
 

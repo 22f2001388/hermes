@@ -39,7 +39,7 @@ Share secrets across services with a Render **env group**; set per-agent vars (`
 
 4. **Set env vars** — every required variable from the table above (use an env group for shared secrets).
 
-5. **Health check** — Render polls the dummy HTTP server on port `7860` (`entrypoint.sh` binds it). Set the service port to `7860`.
+5. **Health check** — Render injects its own `PORT`; `entrypoint.sh` binds the dummy HTTP server to `${PORT:-7860}`, so the health check works without setting a port. (HF/local default to `7860`.)
 
 6. **Deploy.** Render builds the image and boots the agent.
 

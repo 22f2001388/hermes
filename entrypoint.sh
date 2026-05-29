@@ -1,4 +1,11 @@
 #!/bin/bash
+# Bootstraps a named Hermes agent and starts the gateway.
+#
+# Required env (cloud):  AGENT_NAME, TELEGRAM_BOT_TOKEN
+# Optional env:          GEMINI_API_KEYS, GEMINI_API_KEY, HF_TOKEN,
+#                        AGENT_MODEL, AGENT_PROVIDER, AGENT_PERSONALITY,
+#                        TELEGRAM_BASE_URL, TELEGRAM_PROXY_HOST,
+#                        TELEGRAM_ALLOWED_USERS, TELEGRAM_HOME_CHANNEL
 set -euo pipefail
 umask 077
 
@@ -9,6 +16,23 @@ die() {
 	exit 1
 }
 
+reset_gemini_pool() {
+	# remove index 1 repeatedly until the pool is empty (removal reindexes)
+	while hermes auth remove gemini 1 >/dev/null 2>&1; do :; done
+}
+
+add_gemini_key() {
+	local key="$1"
+	[ -n "$key" ] || return 1
+	if hermes auth add gemini --type api-key --api-key "$key" >/dev/null 2>&1; then
+		log "added gemini key ...${key: -4}"
+		return 0
+	fi
+	warn "failed to add gemini key ...${key: -4}"
+	return 1
+}
+
+# ── health server ─────────────────────────────────────────────────────────────
 # Platforms inject their own PORT (Render); HF/local default to 7860.
 PORT="${PORT:-7860}"
 
@@ -28,6 +52,7 @@ HTTPServer(('0.0.0.0', int(os.environ['HEALTH_PORT'])), H).serve_forever()
 log "Health check server up on port $PORT"
 log "Initializing Hermes Agent..."
 
+# ── platform detection ────────────────────────────────────────────────────────
 if [ -n "${SPACE_ID:-}" ]; then
 	PLATFORM="hf"
 elif [ -n "${RENDER:-}" ]; then
@@ -40,6 +65,7 @@ log "Detected platform: $PLATFORM"
 PERSIST_DIR="/data"
 APP_DIR="$HOME/app"
 
+# ── agent identity ────────────────────────────────────────────────────────────
 # AGENT_NAME guard: required for cloud deployments, random fallback for local
 if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
 	[ -n "${AGENT_NAME:-}" ] || die "AGENT_NAME is required on $PLATFORM. Set it via Space/Render secrets."
@@ -62,7 +88,8 @@ WORKSPACE_DATA="/data/${AGENT_NAME}/workspace"
 
 command -v hermes >/dev/null 2>&1 || die "hermes binary not found"
 
-# Persistence: scope each agent under /data/<AGENT_NAME>/ and symlink $HOME/.hermes to it.
+# ── persistence ───────────────────────────────────────────────────────────────
+# Scope each agent under /data/<AGENT_NAME>/ and symlink $HOME/.hermes to it.
 # Souls live under $APP_DIR/agents (baked, never shadowed by the symlink).
 if [ -d "$PERSIST_DIR" ]; then
 	log "Persistent storage found at $PERSIST_DIR"
@@ -79,6 +106,7 @@ else
 	cd "$APP_DIR"
 fi
 
+# ── soul + per-agent config ───────────────────────────────────────────────────
 SOUL_SRC="$APP_DIR/agents/${AGENT_NAME}/soul.md"
 [ -f "$SOUL_SRC" ] || die "no soul at agents/${AGENT_NAME}/soul.md"
 cp "$SOUL_SRC" "$HOME/.hermes/SOUL.md"
@@ -116,16 +144,18 @@ fi
 # container's env_file/--env-file; we deliberately do NOT source $ENV_FILE here — the
 # GEMINI_API_KEYS JSON-list value is not shell-safe and would break under `.`.
 
-# tmate (SSH access) — all platforms. tmate generates its own ephemeral keys; no ssh-keygen needed.
+# ── ssh access (tmate) ────────────────────────────────────────────────────────
+# tmate generates its own ephemeral keys; no ssh-keygen needed.
 echo "set -g mouse on" >"$HOME/.tmate.conf"
 tmate -S /tmp/tmate.sock new-session -d 2>/dev/null || true
-for _ in 1 2 3 4 5; do
+for attempt in 1 2 3 4 5; do
 	SSH_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
 	[ -n "${SSH_URL:-}" ] && break
 	sleep 1
 done
 log "SSH: ${SSH_URL:-tmate failed to connect}"
 
+# ── auth: HF + gemini pool ────────────────────────────────────────────────────
 if [ -n "${HF_TOKEN:-}" ]; then
 	hermes model set-provider hf --default || warn "HF provider config failed (continuing)"
 fi
@@ -133,22 +163,6 @@ fi
 # Gemini key pool: reset each boot (deterministic), then add every key from GEMINI_API_KEYS.
 # Hermes seeds at most 2 keys from env (GOOGLE_API_KEY, GEMINI_API_KEY); the ONLY way to pool
 # N keys is `hermes auth add`. Each add gets a random id (no value-dedup), so we clear first.
-reset_gemini_pool() {
-	# remove index 1 repeatedly until the pool is empty (removal reindexes)
-	while hermes auth remove gemini 1 >/dev/null 2>&1; do :; done
-}
-
-add_gemini_key() {
-	local key="$1"
-	[ -n "$key" ] || return 1
-	if hermes auth add gemini --type api-key --api-key "$key" >/dev/null 2>&1; then
-		log "added gemini key ...${key: -4}"
-		return 0
-	fi
-	warn "failed to add gemini key ...${key: -4}"
-	return 1
-}
-
 GEMINI_ADDED=0
 if [ -n "${GEMINI_API_KEYS:-}" ]; then
 	reset_gemini_pool
@@ -183,6 +197,7 @@ fi
 hermes config set credential_pool_strategies.gemini round_robin ||
 	warn "Gemini round-robin strategy config failed (continuing)"
 
+# ── hermes config ─────────────────────────────────────────────────────────────
 # Default model + provider. The /data symlink shadows the baked config.yaml, so the persisted
 # config starts with model='' and no provider — set both each boot. Provider MUST be explicit:
 # our keys live in the auth pool (auth.json), not env, so without `provider=gemini` Hermes
@@ -196,6 +211,7 @@ hermes config set provider "$AGENT_PROVIDER" &&
 	log "provider -> $AGENT_PROVIDER" ||
 	warn "provider config failed (continuing)"
 
+# ── telegram config ───────────────────────────────────────────────────────────
 # Telegram proxy (HF/Render block api.telegram.org). The bot client honors extra.base_url and
 # routes every call — including the getUpdates long-poll — through the Cloudflare Worker.
 TELEGRAM_BASE_URL="${TELEGRAM_BASE_URL:-https://hermes.22f2001388.workers.dev/bot}"
@@ -229,6 +245,7 @@ if [ -n "${AGENT_PERSONALITY:-}" ]; then
 		warn "display.personality config failed (continuing)"
 fi
 
+# ── launch ────────────────────────────────────────────────────────────────────
 log "Starting Hermes gateway (autonomous mode)..."
 while true; do
 	if hermes gateway run; then
