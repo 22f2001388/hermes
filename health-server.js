@@ -1,8 +1,5 @@
 "use strict";
 
-// Single-port router on HF Space port 7861. GATEWAY_TOKEN gates both
-// Hermes admin and Hermes WebUI via shared cookie/bearer auth.
-
 const http = require("http");
 const fs = require("fs");
 const net = require("net");
@@ -17,9 +14,7 @@ const GATEWAY_HOST = "127.0.0.1";
 const startTime = Date.now();
 const API_SERVER_KEY = process.env.API_SERVER_KEY || "";
 const HM_PREFIX = "/hm";
-// Off-Space dashboard passthrough — workspace scrapes /hmd/ token,
-// sends bearer on /hmd/api/*. No router-level auth (dashboard's own
-// session token gates writes). Reachable URL = reachable API.
+
 const HMD_PREFIX = "/hmd";
 const LOGIN_PATH = "/hm/login";
 const SESSION_COOKIE = "hermes_session";
@@ -28,8 +23,6 @@ const PRIMARY_UI = (process.env.PRIMARY_UI || "webui").toLowerCase();
 const SYNC_STATUS_FILE = "/tmp/hermes-sync-status.json";
 const CLOUDFLARE_KEEPALIVE_STATUS_FILE =
   "/tmp/hermes-cloudflare-keepalive-status.json";
-
-// --- Port probing + auth ---
 
 function canConnect(port, host = GATEWAY_HOST, timeoutMs = 600) {
   return new Promise((resolve) => {
@@ -162,8 +155,6 @@ function readRequestBody(req, limit = 64 * 1024) {
   });
 }
 
-// --- Login page ---
-
 function renderLoginPage(nextPath, errorMessage = "") {
   const safeNext = sanitizeNext(nextPath, "/");
   const errorHtml = errorMessage
@@ -269,8 +260,6 @@ function requireAuth(req, res) {
   return false;
 }
 
-/* ── Upstream proxy ────────────────────────────────────────────────── */
-
 function proxyRequest(
   req,
   res,
@@ -315,20 +304,6 @@ function redirect(res, location, statusCode = 302) {
   res.end();
 }
 
-/* ── Dashboard SPA proxy with HTML rewriting ──────────────────────────
- *
- * The Hermes dashboard is a Vite React app built for root-path deployment.
- * Its HTML hardcodes window.__HERMES_BASE_PATH__="" and absolute src/href
- * paths like /assets/index-XXX.js. Under /hm/app, React's router wouldn't
- * know its basename and client-side routes (/config, /sessions, etc.) 404
- * on refresh.
- *
- * This proxy:
- *   - serves the dashboard's index.html for any non-asset /hm/app/* path
- *     (SPA fallback, so /config, /profiles etc. work on direct load)
- *   - rewrites the returned HTML so React router uses /hm/app as its
- *     basename and absolute asset paths get prefixed with /hm/app
- */
 function proxyDashboard(req, res) {
   const parsed = new URL(req.url, "http://localhost");
   const inner = parsed.pathname.replace(`${HM_PREFIX}/app`, "") || "/";
@@ -340,7 +315,6 @@ function proxyDashboard(req, res) {
     inner.startsWith("/ds-assets/") ||
     /\.[a-z0-9]{1,6}$/i.test(inner);
 
-  // SPA routes → serve index.html; everything else → forward as-is.
   const targetPath =
     (isAssetLike || inner === "/" ? inner : "/") + parsed.search;
 
@@ -349,7 +323,7 @@ function proxyDashboard(req, res) {
     host: `${GATEWAY_HOST}:${DASHBOARD_PORT}`,
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
-    // Disable upstream compression so we can rewrite text responses.
+    
     "accept-encoding": "identity",
   };
 
@@ -378,13 +352,11 @@ function proxyDashboard(req, res) {
       upRes.on("end", () => {
         let body = Buffer.concat(chunks).toString("utf8");
 
-        // Tell the React router its basename.
         body = body.replace(
           /window\.__HERMES_BASE_PATH__\s*=\s*"[^"]*"/g,
           `window.__HERMES_BASE_PATH__="${HM_PREFIX}/app"`,
         );
 
-        // Prefix absolute asset URLs so they stay under /hm/app.
         const prefix = `${HM_PREFIX}/app`;
         body = body.replace(
           /\b(src|href)="\/(?!\/|http)([^"]*)"/g,
@@ -425,8 +397,6 @@ function proxyDashboard(req, res) {
 
   req.pipe(upstream);
 }
-
-/* ── Status JSON + Hermes status page ─────────────────────────── */
 
 function formatUptime(ms) {
   const total = Math.floor(ms / 1000);
@@ -511,7 +481,7 @@ function renderTile({ title, value, detail = "", tone = "neutral", meta = "" }) 
   </article>`;
 }
 
-function renderStatusPage(data) {
+function renderTiles(data) {
   const syncStatus = String(data.backup?.status || "unknown");
   const syncTone = ["success", "restored", "synced", "configured"].includes(syncStatus)
     ? "ok"
@@ -539,7 +509,7 @@ function renderStatusPage(data) {
   const backupDetail = data.backup?.message
     ? escapeHtml(data.backup.message)
     : "No status yet";
-  // Warning banner for known failure modes (e.g. ephemeral .env on Space).
+  
   const backupWarning = data.backup?.warning?.message
     ? `<div class="tile-warning">${escapeHtml(data.backup.warning.message)}</div>`
     : "";
@@ -551,7 +521,7 @@ function renderStatusPage(data) {
         ? "Worker pending or failed"
         : "Not configured";
 
-  const tiles = [
+  return [
     renderTile({
       title: "WebUI",
       value: toneBadge(data.webui ? "Online" : "Offline", data.webui ? "ok" : "off"),
@@ -602,6 +572,10 @@ function renderStatusPage(data) {
       tone: keepAliveTone,
     }),
   ].join("");
+}
+
+function renderStatusPage(data) {
+  const tiles = renderTiles(data);
 
   return `<!doctype html>
 <html lang="en">
@@ -663,29 +637,60 @@ function renderStatusPage(data) {
     <footer>Built on <a href="https://github.com/somratpro/HuggingMes" style="color:var(--accent)">HuggingMes</a> + <a href="https://github.com/nesquena/hermes-webui" style="color:var(--accent)">Hermes WebUI</a></footer>
   </main>
   <script>
-    document.querySelectorAll('.local-time').forEach(el => {
-      const date = new Date(el.getAttribute('data-iso'));
-      if (!isNaN(date)) el.textContent = 'At ' + date.toLocaleTimeString();
-    });
+    function formatLocalTimes(root) {
+      root.querySelectorAll('.local-time').forEach(el => {
+        const date = new Date(el.getAttribute('data-iso'));
+        if (!isNaN(date)) el.textContent = 'At ' + date.toLocaleTimeString();
+      });
+    }
+    formatLocalTimes(document);
+
+    // Live-poll the tiles fragment so ops status refreshes without a reload.
+    // Fragment is first-party, server-escaped HTML; parsed into nodes (no innerHTML sink).
+    const overview = document.querySelector('.overview');
+    const POLL_MIN_MS = 2000;
+    const POLL_MAX_MS = 10000;
+    let polling = false;
+    async function refreshTiles() {
+      if (polling || document.hidden || !overview) return;
+      polling = true;
+      try {
+        // redirect:'manual' so an expired-session 302->login yields ok:false
+        // instead of following through and replacing tiles with the login page.
+        const res = await fetch('${HM_PREFIX}/tiles', { cache: 'no-store', redirect: 'manual' });
+        if (!res.ok) return;
+        const parsed = new DOMParser().parseFromString(await res.text(), 'text/html');
+        overview.replaceChildren(...parsed.body.childNodes);
+        formatLocalTimes(overview);
+      } catch {
+        // Transient network/auth hiccup — keep last good render, retry next tick.
+      } finally {
+        polling = false;
+      }
+    }
+    // Jittered 2-10s interval: decorrelates polls across open tabs, fresh delay each tick.
+    function scheduleNext() {
+      const delay = POLL_MIN_MS + Math.random() * (POLL_MAX_MS - POLL_MIN_MS);
+      setTimeout(async () => {
+        await refreshTiles();
+        scheduleNext();
+      }, delay);
+    }
+    scheduleNext();
   </script>
 </body>
 </html>`;
 }
 
-// --- Server ---
-
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, "http://localhost");
   const path = parsed.pathname;
 
-  // /hm/login — Hermes admin login (cookie-based, gates /hm/*).
-  // WebUI handles its own /login at the catch-all.
   if (path === LOGIN_PATH) {
     await handleLogin(req, res, parsed);
     return;
   }
 
-  // /health — unauthenticated; HF probes + keepalive.
   if (path === "/health") {
     const data = await statusPayload();
     res.writeHead(data.ok ? 200 : 503, { "content-type": "application/json" });
@@ -700,7 +705,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /status — unauthenticated JSON dump.
   if (path === "/status" || path === "/api/status") {
     const data = await statusPayload();
     res.writeHead(200, { "content-type": "application/json" });
@@ -708,13 +712,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /telegram — no auth (Telegram can't do our cookie).
   if (path === "/telegram" || path.startsWith("/telegram/")) {
     proxyRequest(req, res, TELEGRAM_WEBHOOK_PORT);
     return;
   }
 
-  // /v1/* — Hermes gateway (OpenAI-compatible).
   if (path === "/v1" || path.startsWith("/v1/")) {
     if (!isAuthorized(req)) {
       if (wantsHtml(req)) {
@@ -741,7 +743,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /hm — Hermes status page.
   if (path === HM_PREFIX || path === `${HM_PREFIX}/`) {
     if (!requireAuth(req, res)) return;
     const data = await statusPayload();
@@ -750,22 +751,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /hmd/* — Off-Space dashboard passthrough.
-  // Forwards verbatim to DASHBOARD_PORT (/api/*, /assets/*, root HTML).
-  // No router-level auth: dashboard's session token gates writes.
   if (path === HMD_PREFIX || path.startsWith(`${HMD_PREFIX}/`)) {
     proxyRequest(req, res, DASHBOARD_PORT, (p) => p.replace(HMD_PREFIX, "") || "/");
     return;
   }
 
-  // /hm/app/* — Hermes dashboard (SPA with HTML rewriting for base path).
   if (path === `${HM_PREFIX}/app` || path.startsWith(`${HM_PREFIX}/app/`)) {
     if (!requireAuth(req, res)) return;
     proxyDashboard(req, res);
     return;
   }
 
-  // /hm/status — JSON.
   if (path === `${HM_PREFIX}/status`) {
     if (!requireAuth(req, res)) return;
     const data = await statusPayload();
@@ -774,13 +770,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Legacy /dashboard -> /hm.
+  // /hm/tiles — rendered status tiles fragment for the live-poll on the status page.
+  if (path === `${HM_PREFIX}/tiles`) {
+    if (!requireAuth(req, res)) return;
+    const data = await statusPayload();
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(renderTiles(data));
+    return;
+  }
+
   if (path === "/dashboard" || path === "/dashboard/") {
     redirect(res, `${HM_PREFIX}${parsed.search}`);
     return;
   }
 
-  // Root-path dashboard routes without /hm/app prefix -> redirect.
   const dashboardRootRoutes = new Set([
     "/config",
     "/env",
@@ -801,8 +807,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Referer-based routing: dashboard pages request /assets/*, /api/*, etc.
-  // with absolute paths. Disambiguate from WebUI's same-named endpoints.
   const refererPath = (() => {
     const ref = String(req.headers.referer || "");
     if (!ref) return "";
@@ -814,7 +818,6 @@ const server = http.createServer(async (req, res) => {
   })();
   const refererIsDashboard = refererPath.startsWith(`${HM_PREFIX}/app`);
 
-  // /webui in the path escapes dashboard routing — falls through to WebUI proxy below.
   if (refererIsDashboard && !path.startsWith("/webui")) {
     if (!requireAuth(req, res)) return;
     if (isDashboardAssetPath(path)) {
@@ -825,9 +828,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /api/sessions/<id>/chat/stream — 404 for cross-origin probes
-  // so hermes-workspace falls back to /v1/chat/completions instead
-  // of trying the legacy enhanced-fork endpoint.
   if (
     /^\/api\/sessions\/[^/]+\/chat\/stream\/?$/.test(path) &&
     !refererIsDashboard
@@ -846,7 +846,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Dashboard or WebUI for "/" depending on PRIMARY_UI.
   if (PRIMARY_UI === "dashboard" && path === "/") {
     if (!requireAuth(req, res)) return;
     const data = await statusPayload();
@@ -855,7 +854,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Catch-all -> WebUI. WebUI has its own password login (GATEWAY_TOKEN).
   proxyRequest(req, res, WEBUI_PORT);
 });
 
@@ -863,12 +861,6 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Hermes WebUI router listening on 0.0.0.0:${PORT}`);
 });
 
-/* ── WebSocket upgrade handling ─────────────────────────────────────
- *
- * Both the Hermes dashboard and hermes-webui can open WebSocket
- * connections for live updates. Route the upgrade to the correct
- * upstream based on path prefix + referer, same as HTTP requests.
- */
 server.on("upgrade", (req, clientSocket, head) => {
   const parsed = new URL(req.url, "http://localhost");
   const path = parsed.pathname;
@@ -890,7 +882,7 @@ server.on("upgrade", (req, clientSocket, head) => {
   if (path === "/v1" || path.startsWith("/v1/")) {
     targetPort = GATEWAY_PORT;
   } else if (path === HMD_PREFIX || path.startsWith(`${HMD_PREFIX}/`)) {
-    // Off-Space dashboard passthrough (mirrors the HTTP /hmd handler).
+    
     targetPort = DASHBOARD_PORT;
     targetPath = path.replace(HMD_PREFIX, "") || "/";
     if (parsed.search) targetPath += parsed.search;
@@ -907,7 +899,7 @@ server.on("upgrade", (req, clientSocket, head) => {
   }
 
   const upstream = net.createConnection(targetPort, GATEWAY_HOST, () => {
-    // Forward the HTTP upgrade handshake verbatim
+    
     const headerLines = [
       `${req.method} ${targetPath} HTTP/1.1`,
     ];
