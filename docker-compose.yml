@@ -1,0 +1,39 @@
+# Local/non-Space runs of the merged Hermes WebUI build.
+# Values interpolate from a sibling .env (see .env.example). Only port 7861 is exposed; others are internal.
+services:
+  hermes-webui:
+    build:
+      context: .
+      args:
+        HERMES_AGENT_VERSION: ${HERMES_AGENT_VERSION:-latest}
+        WEBUI_REF: ${WEBUI_REF:-v0.51.252}
+    image: hermes-webui:local
+    ports:
+      - "7861:7861"
+    environment:
+      # Core
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-}
+      LLM_MODEL: ${LLM_MODEL:-openrouter/anthropic/claude-sonnet-4}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      SPACE_HOST: ${SPACE_HOST:-localhost:7861}
+      # WebUI
+      PRIMARY_UI: ${PRIMARY_UI:-webui}
+      HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-}
+      # Backup
+      HF_TOKEN: ${HF_TOKEN:-}
+      BACKUP_DATASET_NAME: ${BACKUP_DATASET_NAME:-}
+      SYNC_INCLUDE_ENV: ${SYNC_INCLUDE_ENV:-}
+      # Telegram
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+      TELEGRAM_MODE: ${TELEGRAM_MODE:-}
+      # Cloudflare
+      CLOUDFLARE_WORKERS_TOKEN: ${CLOUDFLARE_WORKERS_TOKEN:-}
+      CLOUDFLARE_PROXY_URL: ${CLOUDFLARE_PROXY_URL:-}
+      CLOUDFLARE_PROXY_SECRET: ${CLOUDFLARE_PROXY_SECRET:-}
+      CLOUDFLARE_PROXY_DOMAINS: ${CLOUDFLARE_PROXY_DOMAINS:-}
+    volumes:
+      - hermes-data:/opt/data
+
+volumes:
+  hermes-data:

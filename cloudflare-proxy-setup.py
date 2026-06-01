@@ -30,6 +30,7 @@ DEFAULT_ALLOWED = [
     "google.com",
     "googleusercontent.com",
     "gstatic.com",
+    # AI-provider domains excluded: proxied calls route API keys through Worker.
 ]
 
 
