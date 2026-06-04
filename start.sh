@@ -12,9 +12,9 @@ die() {
 }
 
 echo ""
-echo "  ╔══════════════════════════════════════════╗"
-echo "  ║                Hermes                    ║"
-echo "  ╚══════════════════════════════════════════╝"
+echo " ╔══════════════════════════════════════════╗"
+echo " ║                Hermes                    ║"
+echo " ╚══════════════════════════════════════════╝"
 echo ""
 
 APP_DIR="${HERMES_APP_DIR:-/opt/hermes}"
@@ -89,6 +89,12 @@ fi
 
 # ── Setup state dirs ──────────────────────────────────────────────────
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,plugins,webui}
+
+# Idempotently seed gateway hooks from repo (overwrite to stay current).
+if [ -d "$APP_DIR/hooks" ]; then
+	cp -a "$APP_DIR/hooks/." "$HERMES_HOME/hooks/"
+	echo "Gateway hooks seeded to $HERMES_HOME/hooks/."
+fi
 
 # Rotate on-disk logs at boot. The router + WebUI + dashboard tee their
 # stdout into $HERMES_HOME/logs/*.log via `tee -a`, which means without
@@ -932,6 +938,9 @@ sync_now() {
 	python3 "$APP_DIR/hermes-sync.py" sync-once || echo "Warning: state sync failed."
 }
 
+# notify_online() — migrated to gateway:startup hook (hooks/hermes-online).
+
+
 # Returns 0 on connect or if pid dies/timeout.
 wait_port_ready() {
 	local port="$1" timeout="$2" pid="$3" i
@@ -1135,6 +1144,8 @@ else
 	echo "Warning: Hermes WebUI not ready within ${WEBUI_READY_TIMEOUT}s. Last 20 log lines:"
 	tail -20 "$HERMES_HOME/logs/webui.log" || true
 fi
+
+# Boot greeting now handled by gateway:startup hook (hooks/hermes-online).
 
 # ── Service restart loop (self-healing) ───────────────────────────────────────
 # Restart services if they die. On cloud, exit and let orchestrator restart container.

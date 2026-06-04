@@ -153,10 +153,11 @@ For deeper troubleshooting (build failures, Telegram, Cloudflare, sync issues), 
 | `CLOUDFLARE_ACCOUNT_ID` | Explicit Cloudflare account ID if you have multiple |
 | `TELEGRAM_BOT_TOKEN` | Enables the Telegram bridge so you can chat with Hermes from Telegram |
 | `TELEGRAM_ALLOWED_USERS` | Comma-separated numeric Telegram user IDs allowed to use the bot |
+| `TELEGRAM_BOOT_TZ` | Optional timezone (e.g. `Asia/Kolkata`) for the boot greeting's time-of-day; falls back to `TZ`, then server time |
 | `PRIMARY_UI` | Controls what `/` shows. Default `webui` (chat UI). Set to `dashboard` to swap in the HuggingMes status page. |
 | `SYNC_INTERVAL` | Backup cadence in seconds (default 600, range 60–86400) |
 | `HERMES_AGENT_VERSION` | Pin the upstream Hermes Agent base image to a specific tag for reproducibility (default `latest`) |
-| `BACKUP_DATASET_NAME` | Name of the private HF Dataset used for persistence (default `huggingmes-backup`) |
+| `BACKUP_DATASET_NAME` | Name of the private HF Dataset used for persistence (default `hermes-backup`) |
 
 ### Configure LLM Provider via Config Editor
 
@@ -310,6 +311,10 @@ Set these as Space **secrets** (Settings → Variables and secrets); never paste
 | Provider key + model | e.g. `GEMINI_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) and the matching model |
 
 And as a Space **variable**: `TELEGRAM_MODE=polling` (mandatory for private Spaces).
+
+#### Boot "online" greeting
+
+On every container (re)start — sleep/wake, redeploy, or crash-restart — once the stack is confirmed up, Hermes sends a customised "online" greeting to the Telegram home channel (`TELEGRAM_HOME_CHANNEL`, auto-detected from the first owner DM if unset) via the **`hermes-online` gateway hook**. It fires **once per container boot only**: an in-place service restart inside the supervisor loop never re-fires it. First comes a deterministic liveness ping (no LLM dependency), then a context-aware greeting on a background thread — LLM-personalised through the local gateway (Hermes greets you in its own voice, using session history and memory). Optional control: `TELEGRAM_BOOT_TZ` (timezone for the time-of-day, else `TZ`, else server time). A **`session-greeting`** hook also greets new Telegram sessions, aware of same-day prior sessions (first-of-day gets a warm greeting, later sessions get a brief "welcome back" or are throttled). With Telegram unconfigured both hooks are no-ops.
 
 > **Key pools (round-robin):** any provider takes a `*_API_KEYS` pool var (e.g. `OPENROUTER_API_KEYS`, `GEMINI_API_KEYS`, `ANTHROPIC_API_KEYS`) holding multiple keys — comma-separated **or** a JSON array. Hermes registers them as a credential pool and rotates round-robin. A pool supersedes the singular `*_API_KEY`. Keys are synced idempotently across restarts (added once; only new/changed keys re-sync on reboot). Supported: `GEMINI`, `OPENROUTER`, `ANTHROPIC`, `OPENAI`, `DEEPSEEK`, `XAI`, `KIMI`, `MINIMAX`, `NVIDIA`, `KILOCODE`, `GLM`, `ARCEEAI`, `DASHSCOPE`, `GMI`, `TOKENHUB`.
 
