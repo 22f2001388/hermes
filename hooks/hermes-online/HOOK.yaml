@@ -1,0 +1,4 @@
+name: hermes-online
+description: Engine-online liveness ping + context-rich greeting
+events:
+  - gateway:startup

@@ -1,0 +1,4 @@
+name: session-greeting
+description: Greet on new session, aware of same-day prior sessions
+events:
+  - session:start

@@ -55,6 +55,7 @@ COPY --chown=hermes:hermes cloudflare-proxy-setup.py      /opt/hermes/cloudflare
 COPY --chown=hermes:hermes cloudflare-keepalive-setup.py  /opt/hermes/cloudflare-keepalive-setup.py
 COPY --chown=hermes:hermes env-builder.html               /opt/hermes/env-builder.html
 COPY --chown=hermes:hermes env-builder.js                 /opt/hermes/env-builder.js
+COPY --chown=hermes:hermes hooks/                         /opt/hermes/hooks/
 
 RUN chmod +x \
     /opt/hermes/start.sh \
