@@ -2,7 +2,12 @@
 # Base: NousResearch Hermes Agent (Hermes CLI, gateway, dashboard, venv).
 
 ARG HERMES_AGENT_VERSION=latest
-FROM nousresearch/hermes-agent:${HERMES_AGENT_VERSION}
+# Pin the base by digest (the image `latest` resolved to on 2026-06-06) so builds
+# are reproducible and the layer cache only busts on a deliberate base bump.
+# HERMES_AGENT_VERSION stays the human-readable label (ENV below); override
+# HERMES_AGENT_REF to build against a different tag or digest.
+ARG HERMES_AGENT_REF=nousresearch/hermes-agent@sha256:e51ed1bbd9a6f6c260a61f8401b6f7ffc9356cfed20b88f387521f9739eff166
+FROM ${HERMES_AGENT_REF}
 
 ARG WEBUI_REF=v0.51.252
 
