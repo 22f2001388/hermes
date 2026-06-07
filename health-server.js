@@ -427,6 +427,74 @@ function proxyRequest(
   const parsed = new URL(req.url, "http://localhost");
   const targetPath = rewritePath(parsed.pathname) + parsed.search;
   const localOrigin = `http://${GATEWAY_HOST}:${targetPort}`;
+
+  const hasBody = req.method === "POST" || req.method === "PUT" || req.method === "PATCH";
+
+  if (hasBody) {
+    const chunks = [];
+    let size = 0;
+    const limit = 20 * 1024 * 1024; // 20MB cap
+
+    req.on("data", (chunk) => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > limit) {
+        req.destroy();
+        if (!res.headersSent) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "payload_too_large" }));
+        }
+      }
+    });
+
+    req.on("end", () => {
+      const body = Buffer.concat(chunks, size);
+      const headers = {
+        ...req.headers,
+        ...headerOverrides,
+        host: `${GATEWAY_HOST}:${targetPort}`,
+        origin: localOrigin,
+        "x-forwarded-host": req.headers.host || "",
+        "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
+      };
+      delete headers["transfer-encoding"];
+      headers["content-length"] = String(size);
+
+      const proxy = http.request(
+        {
+          hostname: GATEWAY_HOST,
+          port: targetPort,
+          method: req.method,
+          path: targetPath,
+          headers,
+        },
+        (upstream) => {
+          res.writeHead(upstream.statusCode || 502, upstream.headers);
+          upstream.pipe(res);
+        },
+      );
+
+      proxy.on("error", (error) => {
+        if (!res.headersSent) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "proxy_error", message: error.message }));
+        }
+      });
+
+      if (size > 0) proxy.write(body);
+      proxy.end();
+    });
+
+    req.on("error", (error) => {
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "proxy_error", message: error.message }));
+      }
+    });
+
+    return;
+  }
+
   const headers = {
     ...req.headers,
     ...headerOverrides,
@@ -476,6 +544,122 @@ function proxyDashboard(req, res) {
 
   const targetPath =
     (isAssetLike || inner === "/" ? inner : "/") + parsed.search;
+
+  const hasBody = req.method === "POST" || req.method === "PUT" || req.method === "PATCH";
+
+  if (hasBody) {
+    const chunks = [];
+    let size = 0;
+    const limit = 20 * 1024 * 1024; // 20MB cap
+
+    req.on("data", (chunk) => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > limit) {
+        req.destroy();
+        if (!res.headersSent) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "payload_too_large" }));
+        }
+      }
+    });
+
+    req.on("end", () => {
+      const body = Buffer.concat(chunks, size);
+      const headers = {
+        ...req.headers,
+        host: `${GATEWAY_HOST}:${DASHBOARD_PORT}`,
+        origin: `http://${GATEWAY_HOST}:${DASHBOARD_PORT}`,
+        "x-forwarded-host": req.headers.host || "",
+        "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
+        "accept-encoding": "identity",
+      };
+      delete headers["transfer-encoding"];
+      headers["content-length"] = String(size);
+
+      const upstream = http.request(
+        {
+          hostname: GATEWAY_HOST,
+          port: DASHBOARD_PORT,
+          method: req.method,
+          path: targetPath,
+          headers,
+        },
+        (upRes) => {
+          const contentType = String(upRes.headers["content-type"] || "");
+          const shouldRewrite =
+            contentType.includes("text/html") ||
+            contentType.includes("application/xhtml");
+
+          if (!shouldRewrite) {
+            res.writeHead(upRes.statusCode || 502, upRes.headers);
+            upRes.pipe(res);
+            return;
+          }
+
+          const chunks = [];
+          upRes.on("data", (chunk) => chunks.push(chunk));
+          upRes.on("end", () => {
+            let body = Buffer.concat(chunks).toString("utf8");
+
+            body = body.replace(
+              /window\.__HERMES_BASE_PATH__\s*=\s*"[^"]*"/g,
+              `window.__HERMES_BASE_PATH__="${HM_PREFIX}/app"`,
+            );
+
+            const prefix = `${HM_PREFIX}/app`;
+            body = body.replace(
+              /\b(src|href)="\/(?!\/|http)([^"]*)"/g,
+              (match, attr, rest) => {
+                if (
+                  ("/" + rest).startsWith(prefix + "/") ||
+                  "/" + rest === prefix
+                ) {
+                  return match;
+                }
+                return `${attr}="${prefix}/${rest}"`;
+              },
+            );
+
+            const buf = Buffer.from(body, "utf8");
+            const outHeaders = { ...upRes.headers };
+            delete outHeaders["content-length"];
+            delete outHeaders["transfer-encoding"];
+            delete outHeaders["content-encoding"];
+            outHeaders["content-length"] = String(buf.length);
+
+            res.writeHead(upRes.statusCode || 502, outHeaders);
+            res.end(buf);
+          });
+          upRes.on("error", () => {
+            try {
+              res.writeHead(502);
+              res.end();
+            } catch {}
+          });
+        },
+      );
+
+      upstream.on("error", (error) => {
+        if (!res.headersSent) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "proxy_error", message: error.message }));
+        }
+      });
+
+      if (size > 0) upstream.write(body);
+      upstream.end();
+    });
+
+    req.on("error", (error) => {
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "proxy_error", message: error.message }));
+      }
+    });
+
+    return;
+  }
 
   const headers = {
     ...req.headers,
