@@ -191,7 +191,7 @@ function isHttpsRequest(req) {
 
 function buildSessionCookie(req) {
   const secure = isHttpsRequest(req) ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${encodeURIComponent(expectedSessionValue())}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}`;
+  return `${SESSION_COOKIE}=${encodeURIComponent(expectedSessionValue())}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`;
 }
 
 function getBearerToken(req) {
@@ -426,10 +426,12 @@ function proxyRequest(
 ) {
   const parsed = new URL(req.url, "http://localhost");
   const targetPath = rewritePath(parsed.pathname) + parsed.search;
+  const localOrigin = `http://${GATEWAY_HOST}:${targetPort}`;
   const headers = {
     ...req.headers,
     ...headerOverrides,
     host: `${GATEWAY_HOST}:${targetPort}`,
+    origin: localOrigin,
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
   };
@@ -478,6 +480,7 @@ function proxyDashboard(req, res) {
   const headers = {
     ...req.headers,
     host: `${GATEWAY_HOST}:${DASHBOARD_PORT}`,
+    origin: `http://${GATEWAY_HOST}:${DASHBOARD_PORT}`,
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
     
@@ -1024,6 +1027,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // /hm/logs — view service logs without needing HF Pro SSH.
+  // Auth-gated (same as /hm status page). Supports ?tail=N to limit lines.
+  if (path === `${HM_PREFIX}/logs` || path.startsWith(`${HM_PREFIX}/logs/`)) {
+    if (!requireAuth(req, res)) return;
+    const logDir = process.env.HERMES_HOME
+      ? `${process.env.HERMES_HOME}/logs`
+      : "/opt/data/logs";
+    const logFiles = ["dashboard.log", "gateway.log", "webui.log"];
+    if (path.startsWith(`${HM_PREFIX}/logs/`)) {
+      const name = path.slice(`${HM_PREFIX}/logs/`.length);
+      if (!logFiles.includes(name)) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("Not found");
+        return;
+      }
+      try {
+        const tailRaw = parsed.searchParams.get("tail");
+        const tailNum = Number(tailRaw);
+        const tail = Number.isFinite(tailNum) && tailNum > 0
+          ? Math.min(tailNum, 5000)
+          : 200;
+        const content = fs.readFileSync(`${logDir}/${name}`, "utf8");
+        const lines = content.split("\n");
+        const sliced = lines.slice(-tail);
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end(sliced.join("\n"));
+      } catch {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end(`Log file ${name} not found`);
+      }
+      return;
+    }
+    const links = logFiles.map((f) => {
+      const size = (() => { try { return fs.statSync(`${logDir}/${f}`).size; } catch { return 0; } })();
+      return `<li><a href="${HM_PREFIX}/logs/${f}?tail=200">${escapeHtml(f)}</a> (${(size / 1024).toFixed(1)} KB)</li>`;
+    }).join("");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><head><meta charset="utf-8"/><title>HuggingMes Logs</title>
+<style>body{font-family:monospace;background:#0a0a12;color:#e0e0e0;padding:20px}a{color:#38bdf8}h1{font-size:1.2rem}li{margin:8px 0}</style></head>
+<body><h1>Service Logs</h1><p>Append <code>?tail=N</code> to limit lines (default 200).</p><ul>${links}</ul></body></html>`);
+    return;
+  }
+
   if (path === "/dashboard" || path === "/dashboard/") {
     redirect(res, `${HM_PREFIX}${parsed.search}`);
     return;
@@ -1183,8 +1229,12 @@ server.on("upgrade", (req, clientSocket, head) => {
     if (parsed.search) targetPath += parsed.search;
   }
 
+  const localHost = `${GATEWAY_HOST}:${targetPort}`;
   const upstream = net.createConnection(targetPort, GATEWAY_HOST, () => {
     
+    // Rewrite Host to the local backend so the dashboard/gateway accept the
+    // WebSocket origin. Desktop app → HF proxy sends Host: <space>.hf.space
+    // but the dashboard checks against its own bind address (127.0.0.1:PORT).
     const headerLines = [
       `${req.method} ${targetPath} HTTP/1.1`,
       `X-Forwarded-Host: ${req.headers.host || ""}`,
@@ -1194,6 +1244,16 @@ server.on("upgrade", (req, clientSocket, head) => {
       // Skip inbound forwarded headers — re-injected above to avoid duplicates.
       const lower = name.toLowerCase();
       if (lower === "x-forwarded-host" || lower === "x-forwarded-proto") continue;
+      // Rewrite Host and Origin so the backend accepts the WS handshake.
+      // The dashboard's origin guard checks Origin against its own host.
+      if (lower === "host") {
+        headerLines.push(`Host: ${localHost}`);
+        continue;
+      }
+      if (lower === "origin") {
+        headerLines.push(`Origin: http://${localHost}`);
+        continue;
+      }
       if (Array.isArray(value)) {
         for (const v of value) headerLines.push(`${name}: ${v}`);
       } else {
