@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Hermes state backup via HF Storage Buckets. Vendored from HuggingMes.
 
-Backs up $HERMES_HOME (sessions, profiles, skills, cron, memory, workspace,
-plugins, webui state) so the full agent workspace survives Space restarts.
+Backs up the agent home ($HERMES_BACKUP_ROOT): the .hermes config dir (sessions,
+profiles, skills, cron, memory, plugins, webui state) plus the workspace, so the
+full agent home survives Space restarts.
 
 Each agent writes under its own prefix (AGENT_NAME) inside one shared private
 bucket, so many agents share a bucket without clobbering each other."""
@@ -32,6 +33,8 @@ from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+# Snapshot the whole agent home (state in .hermes/ + work in workspace/), not just .hermes.
+BACKUP_ROOT = Path(os.environ.get("HERMES_BACKUP_ROOT", str(HERMES_HOME)))
 STATUS_FILE = Path("/tmp/hermes-sync-status.json")
 STATE_FILE = HERMES_HOME / ".hermes-sync-state.json"
 INTERVAL = int(os.environ.get("SYNC_INTERVAL", "60"))
@@ -54,7 +57,6 @@ MAX_FILE_SIZE_BYTES = int(os.environ.get("SYNC_MAX_FILE_BYTES", str(50 * 1024 * 
 
 EXCLUDED_DIRS = {
     ".cache",
-    ".git",
     ".npm",
     ".venv",
     "__pycache__",
@@ -79,6 +81,22 @@ _NAMESPACE_CACHE: str | None = None
 # by default (secrets in a backup is the wrong tradeoff). Status page banner.
 ENV_FILE = HERMES_HOME / ".env"
 ON_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("SPACE_HOST"))
+
+
+def _rel_to_backup(p: Path) -> str | None:
+    try:
+        return p.relative_to(BACKUP_ROOT).as_posix()
+    except ValueError:
+        return None
+
+
+# Nested-path excludes: the state marker, and .env unless opted in. Keyed off
+# BACKUP_ROOT so they match wherever .hermes sits under the snapshot root.
+EXCLUDED_RELPATHS = {r for r in (_rel_to_backup(STATE_FILE),) if r}
+if not INCLUDE_ENV:
+    _env_rel = _rel_to_backup(ENV_FILE)
+    if _env_rel:
+        EXCLUDED_RELPATHS.add(_env_rel)
 
 
 def env_warning_payload() -> dict | None:
@@ -184,10 +202,10 @@ def _is_404(exc: HfHubHTTPError) -> bool:
     return exc.response is not None and exc.response.status_code == 404
 
 
-def bucket_prefix_empty(bucket_id: str) -> bool:
-    """True when this agent's prefix holds no files yet (or doesn't exist)."""
+def bucket_prefix_empty(bucket_id: str, prefix: str | None = None) -> bool:
+    """True when the given prefix (default: this agent) holds no files yet."""
     try:
-        for _ in HF_API.list_bucket_tree(bucket_id, prefix=AGENT_NAME):
+        for _ in HF_API.list_bucket_tree(bucket_id, prefix=prefix or AGENT_NAME):
             return False
     except (RepositoryNotFoundError, HfHubHTTPError):
         return True
@@ -200,6 +218,8 @@ def should_exclude(rel_posix: str, path: Path) -> bool:
     parts = Path(rel_posix).parts
     if not parts:
         return False
+    if rel_posix in EXCLUDED_RELPATHS:
+        return True
     if parts[0] in EXCLUDED_TOP_LEVEL:
         return True
     if any(part in EXCLUDED_DIRS for part in parts):
@@ -272,11 +292,11 @@ def create_snapshot_dir(source_root: Path) -> Path:
 
 
 def _push_snapshot(uri: str, delete: bool) -> None:
-    """Upload an exclude-filtered snapshot of HERMES_HOME to the agent prefix.
+    """Upload an exclude-filtered snapshot of BACKUP_ROOT to the agent prefix.
 
     Routed through create_snapshot_dir so byte-identical exclude semantics
     (including the 50MB cap) hold for both routine syncs and migration seeds."""
-    snapshot_dir = create_snapshot_dir(HERMES_HOME)
+    snapshot_dir = create_snapshot_dir(BACKUP_ROOT)
     try:
         HF_API.sync_bucket(str(snapshot_dir), uri, delete=delete, quiet=True)
     finally:
@@ -338,9 +358,15 @@ def restore() -> bool:
     write_status("restoring", f"Restoring Hermes state from {uri}")
     try:
         bucket_id = ensure_bucket_exists()
-        HERMES_HOME.mkdir(parents=True, exist_ok=True)
-        # Download the agent prefix into HERMES_HOME. No delete: baked-in local
-        # files (config, plugins) must survive a restore of an empty/partial prefix.
+        # New-layout backups carry a `.hermes/` prefix (keys relative to the agent
+        # home); old ones are keyed relative to .hermes itself. Restore each into
+        # the root it was keyed against — start.sh then migrates the old shape and
+        # the next delete-sync re-keys the bucket.
+        new_layout = not bucket_prefix_empty(bucket_id, f"{AGENT_NAME}/.hermes")
+        target = BACKUP_ROOT if new_layout else HERMES_HOME
+        target.mkdir(parents=True, exist_ok=True)
+        # No delete: baked-in local files (config, plugins) must survive a restore
+        # of an empty/partial prefix.
         try:
             HF_API.sync_bucket(uri, str(target), quiet=True)
         except RepositoryNotFoundError:
@@ -412,12 +438,12 @@ def sync_once(last_fingerprint: str | None = None, last_marker: tuple[int, int, 
 
     ensure_bucket_exists()
     uri = remote_uri()
-    current_marker = metadata_marker(HERMES_HOME)
+    current_marker = metadata_marker(BACKUP_ROOT)
     if last_marker is not None and current_marker == last_marker:
         write_status("synced", "No Hermes state changes detected (marker match).")
         return (last_fingerprint or "", current_marker)
 
-    current_fingerprint = fingerprint_dir(HERMES_HOME)
+    current_fingerprint = fingerprint_dir(BACKUP_ROOT)
     if last_fingerprint is not None and current_fingerprint == last_fingerprint:
         write_status("synced", "No Hermes state changes detected (fingerprint match).")
         return (last_fingerprint, current_marker)
@@ -468,7 +494,7 @@ def loop() -> int:
         except Exception:
             pass
     if last_marker is None:
-        last_marker = metadata_marker(HERMES_HOME)
+        last_marker = metadata_marker(BACKUP_ROOT)
 
     if STOP_EVENT.wait(INITIAL_DELAY):
         return 0
@@ -493,7 +519,7 @@ def loop() -> int:
             break
 
         try:
-            current_marker = metadata_marker(HERMES_HOME)
+            current_marker = metadata_marker(BACKUP_ROOT)
         except Exception as exc:
             # Don't let a transient stat error kill the loop.
             write_status("error", f"marker scan failed: {exc}")
@@ -539,6 +565,7 @@ def loop() -> int:
 
 def main() -> int:
     HERMES_HOME.mkdir(parents=True, exist_ok=True)
+    BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
     if len(sys.argv) < 2:
         return loop()
     command = sys.argv[1]
