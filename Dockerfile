@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
      npm \
      chromium \
      tmate \
+     tmux \
      libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -43,6 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         "huggingface_hub>=1.18.0" hf_transfer pyyaml
+
+# Coding agents on PATH for in-container use: Claude Code + opencode.
+RUN npm install -g @anthropic-ai/claude-code opencode-ai \
+ && npm cache clean --force
 
 # Clone WebUI; install deps using system pip (base image venv may not exist yet)
 RUN git clone --depth 1 --branch ${WEBUI_REF} \

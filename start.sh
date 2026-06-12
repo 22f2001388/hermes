@@ -545,10 +545,12 @@ PROFILE
 echo "Shell capture wrappers ready."
 
 # ── Pool key promotion ──
-# Mirror first key from comma-separated pool vars into the singular env var.
-# Hermes providers read singular vars; this lets users supply pool keys like
-# ANTHROPIC_API_KEYS=key1,key2 and have them picked up automatically.
-# Gemini excluded — WU's JSON-array round-robin is richer.
+# Mirror first key from a pool var into the singular env var. Accepts both the
+# comma-separated form (key1,key2) and the JSON-array form (["key1","key2"]) —
+# the same two shapes the Python parse_pool() below accepts — so a pool supplied
+# as JSON does not leak a leading `[`/quote into the promoted singular key.
+# Hermes providers read singular vars; this lets users supply pool keys and have
+# them picked up automatically. Gemini excluded — WU's JSON-array round-robin is richer.
 promote_first_pool_key() {
 	local singular_var="$1"
 	local pool_var="$2"
@@ -557,7 +559,14 @@ promote_first_pool_key() {
 	[ -n "$singular_val" ] && return 0
 	[ -n "$pool_val" ] || return 0
 	local first
-	first=$(printf '%s' "$pool_val" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | awk 'NF{print; exit}')
+	# Strip an optional surrounding JSON array (`[ ... ]`), split on comma, take
+	# the first non-empty field, then strip surrounding whitespace and quotes.
+	first=$(printf '%s' "$pool_val" \
+		| sed -e 's/^[[:space:]]*\[//' -e 's/\][[:space:]]*$//' \
+		| tr ',' '\n' \
+		| sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+		| awk 'NF{print; exit}' \
+		| sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")
 	[ -n "$first" ] || return 0
 	export "${singular_var}=$first"
 }
@@ -578,6 +587,73 @@ promote_first_pool_key "DASHSCOPE_API_KEY"    "DASHSCOPE_API_KEYS"
 promote_first_pool_key "GMI_API_KEY"          "GMI_API_KEYS"
 promote_first_pool_key "TOKENHUB_API_KEY"     "TOKENHUB_API_KEYS"
 promote_first_pool_key "OLLAMA_API_KEY"       "OLLAMA_API_KEYS"
+promote_first_pool_key "CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKENS"
+
+# ── Coding-agent CLIs (claude-code + opencode) headless setup ───────────────
+# Seed config so unattended tasks invoke claude/opencode non-interactively (no
+# onboarding/permission prompts). Auth via promoted singular keys. Defaults are
+# merged not clobbered, so operator edits survive. opencode model override:
+# CODING_AGENT_OPENCODE_MODEL.
+setup_coding_agents() {
+	local oc_model="${CODING_AGENT_OPENCODE_MODEL:-opencode/mimo-v2.5-free}"
+	CODING_HOME="$HOME" OC_MODEL="$oc_model" python3 - <<'PY' || echo "coding-agent setup: skipped (python error)"
+import json, os, pathlib
+
+home = pathlib.Path(os.environ["CODING_HOME"])
+
+# Claude Code: seed bypass-permissions + onboarding ack; merge so absent keys
+# only, preserving operator edits.
+(home / ".claude").mkdir(parents=True, exist_ok=True)
+sjson = home / ".claude" / "settings.json"
+try:
+    s = json.loads(sjson.read_text())
+    if not isinstance(s, dict):
+        s = {}
+except Exception:
+    s = {}
+perms = s.setdefault("permissions", {})
+if isinstance(perms, dict):
+    perms.setdefault("defaultMode", "bypassPermissions")
+env = s.setdefault("env", {})
+if isinstance(env, dict):
+    env.setdefault("DISABLE_AUTOUPDATER", "1")
+sjson.write_text(json.dumps(s, indent=2))
+gjson = home / ".claude.json"
+try:
+    g = json.loads(gjson.read_text())
+    if not isinstance(g, dict):
+        g = {}
+except Exception:
+    g = {}
+g["hasCompletedOnboarding"] = True
+gjson.write_text(json.dumps(g, indent=2))
+
+# opencode: keys from env; merge defaults (absent keys only).
+ocdir = home / ".config" / "opencode"
+ocdir.mkdir(parents=True, exist_ok=True)
+ocjson = ocdir / "opencode.json"
+try:
+    cfg = json.loads(ocjson.read_text())
+    if not isinstance(cfg, dict):
+        cfg = {}
+except Exception:
+    cfg = {}
+cfg.setdefault("$schema", "https://opencode.ai/config.json")
+cfg.setdefault("autoupdate", False)
+perm = cfg.setdefault("permission", {})
+if isinstance(perm, dict):
+    perm.setdefault("edit", "allow")
+    perm.setdefault("bash", "allow")
+    perm.setdefault("webfetch", "allow")
+model = os.environ.get("OC_MODEL", "").strip()
+if model:
+    cfg.setdefault("model", model)
+ocjson.write_text(json.dumps(cfg, indent=2))
+print("coding-agent setup: claude + opencode config seeded "
+      f"(opencode model: {model or 'default'})")
+PY
+}
+setup_coding_agents
 
 # ── Hermes config setup (via CLI, not YAML) ───────────────────────────────
 log "Configuring Hermes via CLI"
