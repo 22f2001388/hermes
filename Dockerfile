@@ -9,7 +9,7 @@ ARG HERMES_AGENT_VERSION=latest
 ARG HERMES_AGENT_REF=nousresearch/hermes-agent@sha256:e51ed1bbd9a6f6c260a61f8401b6f7ffc9356cfed20b88f387521f9739eff166
 FROM ${HERMES_AGENT_REF}
 
-ARG WEBUI_REF=v0.51.252
+ARG WEBUI_REF=v0.51.369
 
 USER root
 
@@ -118,76 +118,55 @@ PY
 # Silence high-frequency poll paths in logs (drowns HF Logs tab otherwise).
 # Only drops 2xx — errors and streaming still log.
 RUN python3 - <<'PY'
+# Re-applies on every image build against the pinned WEBUI_REF. Marker-based:
+# anchors only on log_request's signature (stable across releases) and injects a
+# quiet-poll early-return as the method's first statements, so upstream rewrites
+# of the log body (e.g. the remote/forwarded_for fields added in newer releases)
+# do not break it. Idempotent via sentinel; loud, non-fatal skip if anchor moves.
 from pathlib import Path
-import re
 import sys
 
 p = Path("/opt/hermes-webui/server.py")
 if not p.exists():
+    print("webui quiet-poll patch: server.py absent, skipping")
     sys.exit(0)
 src = p.read_text(encoding="utf-8")
 sentinel = "# hermes-webui: quiet-poll-paths"
 if sentinel in src:
+    print("webui quiet-poll patch: already applied")
     sys.exit(0)
 
-old = (
-    "    def log_request(self, code: str='-', size: str='-') -> None:\n"
-    "        \"\"\"Structured JSON logs for each request.\"\"\"\n"
-    "        import json as _json\n"
-    "        duration_ms = round((time.time() - getattr(self, '_req_t0', time.time())) * 1000, 1)\n"
-    "        record = _json.dumps({\n"
-    "            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),\n"
-    "            'method': self.command or '-',\n"
-    "            'path': self.path or '-',\n"
-    "            'status': int(code) if str(code).isdigit() else code,\n"
-    "            'ms': duration_ms,\n"
-    "        })\n"
-    "        print(f'[webui] {record}', flush=True)"
-)
+anchor = "    def log_request(self, code: str='-', size: str='-') -> None:\n"
+if anchor not in src:
+    print("webui quiet-poll patch: anchor not found (log_request signature changed) "
+          "-- SKIPPING; webui logs will be noisy until the patch is re-anchored")
+    sys.exit(0)
 
-new = (
-    "    _QUIET_POLL_PATHS = (  " + sentinel + "\n"
-    "        '/api/health/agent', '/api/dashboard/status',\n"
-    "        '/api/dashboard/config', '/api/sessions', '/api/profiles',\n"
-    "        '/api/profile/active', '/api/onboarding/status',\n"
-    "        '/api/insights', '/api/system/health',\n"
-    "        '/api/settings', '/api/projects', '/api/reasoning',\n"
-    "        '/api/models', '/api/chat/stream/status',\n"
-    "        '/api/git-info', '/sw.js', '/health',\n"
-    "    )\n"
-    "    _QUIET_PREFIXES = ('/static/', '/session/static/', '/assets/')\n"
-    "\n"
-    "    def log_request(self, code: str='-', size: str='-') -> None:\n"
-    "        \"\"\"Structured JSON logs for each request, skipping noisy polls.\"\"\"\n"
-    "        # Always log non-2xx so 401/404/5xx remain visible.\n"
+inject = (
+    anchor +
+    "        " + sentinel + "\n"
+    "        _quiet_paths = {\n"
+    "            '/api/health/agent', '/api/dashboard/status', '/api/dashboard/config',\n"
+    "            '/api/sessions', '/api/profiles', '/api/profile/active',\n"
+    "            '/api/onboarding/status', '/api/insights', '/api/system/health',\n"
+    "            '/api/settings', '/api/projects', '/api/reasoning', '/api/models',\n"
+    "            '/api/chat/stream/status', '/api/git-info', '/sw.js', '/health',\n"
+    "        }\n"
+    "        _quiet_prefixes = ('/static/', '/session/static/', '/assets/')\n"
     "        try:\n"
-    "            status_int = int(code) if str(code).isdigit() else 0\n"
+    "            _st = int(code) if str(code).isdigit() else 0\n"
     "        except Exception:\n"
-    "            status_int = 0\n"
-    "        path = (self.path or '').split('?', 1)[0]\n"
-    "        if 200 <= status_int < 400:\n"
-    "            if path in self._QUIET_POLL_PATHS:\n"
+    "            _st = 0\n"
+    "        _qp = (getattr(self, 'path', '') or '').split('?', 1)[0]\n"
+    "        if 200 <= _st < 400:\n"
+    "            if _qp in _quiet_paths:\n"
     "                return\n"
-    "            for pref in self._QUIET_PREFIXES:\n"
-    "                if path.startswith(pref):\n"
+    "            for _pref in _quiet_prefixes:\n"
+    "                if _qp.startswith(_pref):\n"
     "                    return\n"
-    "        import json as _json\n"
-    "        duration_ms = round((time.time() - getattr(self, '_req_t0', time.time())) * 1000, 1)\n"
-    "        record = _json.dumps({\n"
-    "            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),\n"
-    "            'method': self.command or '-',\n"
-    "            'path': self.path or '-',\n"
-    "            'status': int(code) if str(code).isdigit() else code,\n"
-    "            'ms': duration_ms,\n"
-    "        })\n"
-    "        print(f'[webui] {record}', flush=True)"
 )
-
-if old in src:
-    p.write_text(src.replace(old, new), encoding="utf-8")
-    print("webui log-quiet patch: applied")
-else:
-    print("webui log-quiet patch: pattern not found, skipping")
+p.write_text(src.replace(anchor, inject, 1), encoding="utf-8")
+print("webui quiet-poll patch: applied")
 PY
 
 # hermes user needs write access for auto-updates.
