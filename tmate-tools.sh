@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# On-demand tmate sessions for external SSH/web access. Each runs on its own
+# socket under TMATE_DIR; the sockets are the source of truth (no registry).
+# Symlinked as tmate-new / tmate-ls / tmate-kill, or `tmate-tools <cmd>`.
+set -euo pipefail
+shopt -s nullglob
+
+TMATE_DIR="${TMATE_DIR:-/tmp/tmate}"
+MAX_TMATE_SESSIONS="${MAX_TMATE_SESSIONS:-10}"
+READY_TIMEOUT="${TMATE_READY_TIMEOUT:-15}"
+
+mkdir -p "$TMATE_DIR"
+
+_die() {
+	echo "tmate-tools: $*" >&2
+	exit 1
+}
+command -v tmate >/dev/null 2>&1 || _die "tmate not installed"
+
+# Live if the socket answers; otherwise clear the stale file.
+_alive() {
+	if [ -S "$1" ] && tmate -S "$1" display -p '#{session_name}' >/dev/null 2>&1; then
+		return 0
+	fi
+	rm -f "$1" 2>/dev/null || true
+	return 1
+}
+
+_name_of() { tmate -S "$1" display -p '#{session_name}' 2>/dev/null || true; }
+
+# Escape text for Telegram MarkdownV2 (backslash first, then the reserved set).
+_md2() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[][_*()~`>#+=|{}.!-]/\\&/g'; }
+
+# Best-effort Telegram notify. Reads creds from env, falling back to .env;
+# uses TELEGRAM_BASE_URL (proxy) when set. Never fails the caller. TMATE_NOTIFY=0 disables.
+_notify() {
+	[ "${TMATE_NOTIFY:-1}" = "0" ] && return 0
+	command -v curl >/dev/null 2>&1 || return 0
+	local tok="${TELEGRAM_BOT_TOKEN:-}" chat="${TELEGRAM_HOME_CHANNEL:-}" base="${TELEGRAM_BASE_URL:-}"
+	local envf="${HERMES_HOME:-/opt/data}/.env"
+	if [ -f "$envf" ]; then
+		[ -n "$tok" ] || tok=$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$envf" | tail -1 | tr -d '"'\''\r')
+		[ -n "$chat" ] || chat=$(sed -n 's/^TELEGRAM_HOME_CHANNEL=//p' "$envf" | tail -1 | tr -d '"'\''\r')
+	fi
+	[ -n "$tok" ] && [ -n "$chat" ] || return 0
+	local url="https://api.telegram.org/bot${tok}/sendMessage"
+	[ -n "$base" ] && url="${base}${tok}/sendMessage"
+	curl -fsS --max-time 10 -X POST "$url" \
+		--data-urlencode "chat_id=${chat}" \
+		--data-urlencode "parse_mode=MarkdownV2" \
+		--data-urlencode "text=$1" >/dev/null 2>&1 || true
+}
+
+_socket_for() {
+	local want="$1" s
+	for s in "$TMATE_DIR"/*.sock; do
+		_alive "$s" || continue
+		[ "$(_name_of "$s")" = "$want" ] && {
+			echo "$s"
+			return 0
+		}
+	done
+	return 1
+}
+
+cmd_new() {
+	local name="${1:-}" s count=0
+	for s in "$TMATE_DIR"/*.sock; do _alive "$s" && count=$((count + 1)); done
+	[ "$count" -lt "$MAX_TMATE_SESSIONS" ] ||
+		_die "session cap reached ($MAX_TMATE_SESSIONS); kill one first"
+
+	local sock cwd
+	sock=$(mktemp -u "$TMATE_DIR/XXXXXX.sock")
+	[ -n "$name" ] || name=$(basename "$sock" .sock)
+	_socket_for "$name" >/dev/null && _die "session '$name' already exists"
+
+	# Open in the workspace by default; fall back to $PWD then $HOME.
+	cwd="${TMATE_CWD:-$PWD}"
+	[ -d "$cwd" ] || cwd="$HOME"
+
+	# env -u TMUX/TMATE so it can spawn from inside an existing tmate/tmux session.
+	local err
+	err=$(env -u TMUX -u TMATE tmate -S "$sock" new-session -d -s "$name" -c "$cwd" 2>&1) ||
+		_die "failed to start tmate: ${err:-unknown}"
+	if ! timeout "$READY_TIMEOUT" tmate -S "$sock" wait tmate-ready 2>/dev/null; then
+		tmate -S "$sock" kill-server 2>/dev/null || true
+		rm -f "$sock" 2>/dev/null || true
+		_die "not ready within ${READY_TIMEOUT}s (relay unreachable?)"
+	fi
+
+	local ssh ssh_ro web web_ro
+	ssh=$(tmate -S "$sock" display -p '#{tmate_ssh}' 2>/dev/null || true)
+	ssh_ro=$(tmate -S "$sock" display -p '#{tmate_ssh_ro}' 2>/dev/null || true)
+	web=$(tmate -S "$sock" display -p '#{tmate_web}' 2>/dev/null || true)
+	web_ro=$(tmate -S "$sock" display -p '#{tmate_web_ro}' 2>/dev/null || true)
+
+	echo "name:    $name"
+	echo "socket:  $sock"
+	echo "ssh:     $ssh"
+	echo "ssh_ro:  $ssh_ro"
+	echo "web:     $web"
+	echo "web_ro:  $web_ro"
+
+	# ssh in a copyable bash block; web as a bare (escaped) link.
+	_notify "$(printf 'New tmate session: %s\n```bash\n%s\n```\nweb: %s' \
+		"$(_md2 "$name")" "$ssh" "$(_md2 "$web")")"
+}
+
+cmd_ls() {
+	local s found=0
+	for s in "$TMATE_DIR"/*.sock; do
+		_alive "$s" || continue
+		found=1
+		printf '%s\t%s\t%s\n' "$(_name_of "$s")" "$s" \
+			"$(tmate -S "$s" display -p '#{tmate_ssh}' 2>/dev/null || true)"
+	done
+	[ "$found" -eq 1 ] || echo "no active tmate sessions"
+}
+
+cmd_kill() {
+	local name="${1:-}" sock
+	[ -n "$name" ] || _die "usage: tmate-kill <name>"
+	sock=$(_socket_for "$name") || _die "no session named '$name'"
+	tmate -S "$sock" kill-server 2>/dev/null || true
+	rm -f "$sock" 2>/dev/null || true
+	echo "killed: $name"
+}
+
+action=""
+case "${0##*/}" in
+tmate-new) action="new" ;;
+tmate-ls) action="ls" ;;
+tmate-kill) action="kill" ;;
+*)
+	action="${1:-ls}"
+	[ $# -gt 0 ] && shift || true
+	;;
+esac
+
+case "$action" in
+new) cmd_new "$@" ;;
+ls | list) cmd_ls ;;
+kill | rm) cmd_kill "$@" ;;
+-h | --help | help) echo "usage: tmate-new [name] | tmate-ls | tmate-kill <name>" ;;
+*) _die "unknown command '$action' (try --help)" ;;
+esac

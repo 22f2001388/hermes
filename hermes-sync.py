@@ -70,6 +70,9 @@ EXCLUDED_SUFFIXES = (
     ".db-shm", ".db-wal", ".db-journal",
     ".pid", ".tmp",
 )
+EXCLUDED_PATH_PREFIXES = (
+    ".claude/plugins/cache",
+)
 if not INCLUDE_ENV:
     EXCLUDED_TOP_LEVEL.add(".env")
 
@@ -219,6 +222,8 @@ def should_exclude(rel_posix: str, path: Path) -> bool:
     if not parts:
         return False
     if rel_posix in EXCLUDED_RELPATHS:
+        return True
+    if any(rel_posix == pre or rel_posix.startswith(pre + "/") for pre in EXCLUDED_PATH_PREFIXES):
         return True
     if parts[0] in EXCLUDED_TOP_LEVEL:
         return True

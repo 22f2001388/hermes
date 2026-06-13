@@ -131,8 +131,37 @@ fi
 mkdir -p "$HERMES_HOME/.local/bin"
 ln -sfn /opt/hermes/.venv/bin/hermes "$HERMES_HOME/.local/bin/hermes"
 
-# Redirect Hermes plugin dir into volume
-if [ ! -L "${HOME}/.hermes/plugins" ]; then
+# Re-home from the inherited passwd home ($HERMES_DATA_ROOT) to /home/<agent>
+# (a symlink to AGENT_HOME), so ~/.hermes resolves to HERMES_HOME and dotfiles
+# persist. Only re-home once the symlink exists, else keep the passwd home.
+if mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null \
+	&& { [ -L "$WORKSPACE_LINK" ] || [ ! -e "$WORKSPACE_LINK" ]; } \
+	&& ln -sfn "$AGENT_HOME" "$WORKSPACE_LINK" 2>/dev/null; then
+	export HOME="$WORKSPACE_LINK"
+	log "Home: $HOME -> $AGENT_HOME"
+	# Login shells read the passwd home, not this env — shim it there so they
+	# self-correct. Derives the agent from $AGENT_NAME at eval time (not baked)
+	# so it's race-safe when agents share the volume.
+	if [ "$HERMES_DATA_ROOT" != "$AGENT_HOME" ]; then
+		printf '%s\n' \
+			'# hermes: re-home login shells to the per-agent friendly home' \
+			'[ -d "/home/${AGENT_NAME:-primary}" ] && export HOME="/home/${AGENT_NAME:-primary}"' \
+			> "$HERMES_DATA_ROOT/.zshenv" 2>/dev/null || true
+		printf '%s\n' \
+			'# hermes: re-home login shells to the per-agent friendly home' \
+			'if [ -d "/home/${AGENT_NAME:-primary}" ]; then' \
+			'  export HOME="/home/${AGENT_NAME:-primary}"' \
+			'  [ -f "$HOME/.profile" ] && . "$HOME/.profile"' \
+			'fi' \
+			> "$HERMES_DATA_ROOT/.profile" 2>/dev/null || true
+	fi
+else
+	warn "could not re-home to $WORKSPACE_LINK; keeping HOME=$HOME"
+fi
+
+# Redirect plugin dir into the volume — skip when ~/.hermes already IS HERMES_HOME
+# (re-homed), else the link would point to itself and the rm would wipe plugins.
+if [ ! -L "${HOME}/.hermes/plugins" ] && ! [ "${HOME}/.hermes" -ef "$HERMES_HOME" ]; then
 	mkdir -p "${HOME}/.hermes"
 	rm -rf "${HOME}/.hermes/plugins"
 	ln -sfn "$HERMES_HOME/plugins" "${HOME}/.hermes/plugins"
@@ -452,6 +481,13 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 if [ -z "${PS1:-}" ] || [ "$PS1" = "$ " ]; then
   export PS1="\u@\h:\w\$ "
 fi
+case $- in *i*)
+  if [ -d "$HOME/workspace" ] && [ "$PWD" != "$HOME/workspace" ]; then
+    _pp=$(pwd -P 2>/dev/null); _hp=$(cd "$HOME" 2>/dev/null && pwd -P)
+    { [ "$_pp" = "$_hp" ] || [ "$_pp" = "$_hp/workspace" ]; } && cd "$HOME/workspace"
+    unset _pp _hp
+  fi ;;
+esac
 
 _hm_append() {
   [ "${HERMES_CAPTURE_DISABLE:-0}" = "1" ] && return 0
@@ -563,6 +599,124 @@ cat > "$HOME/.profile" << 'PROFILE'
 [ -n "${BASH_VERSION:-}" ] && [ -f ~/.bashrc ] && . ~/.bashrc
 PROFILE
 echo "Shell capture wrappers ready."
+
+# ── zsh interactive config (oh-my-zsh + powerlevel10k + private dotfiles) ──────
+# zsh is the hermes login shell (Dockerfile usermod), so tmate + the in-app
+# terminal open it. OMZ + the p10k theme + plugins are image-baked, but the
+# operator's personal dotfiles stay OUT of the image/git: they ride the HF bucket
+# under $HERMES_HOME (restored above) and load each boot — $HERMES_HOME/p10k.zsh ->
+# ~/.p10k.zsh, $HERMES_HOME/zshrc sourced by the generated ~/.zshrc. The capture
+# wrappers (hermes infra, twin of the bash set above) stay below.
+if [ -f "$HERMES_HOME/p10k.zsh" ]; then
+	cp -f "$HERMES_HOME/p10k.zsh" "$HOME/.p10k.zsh"
+fi
+
+# Bake the resolved per-agent paths: the interactive shell can't re-derive them
+# ($WORKSPACE_HOME is unexported); a wrong base would split history / miss the config.
+{
+	printf 'HISTFILE=%q\n' "$HERMES_HOME/.zsh_history"
+	printf 'HERMES_PERSONAL_ZSHRC=%q\n' "$HERMES_HOME/zshrc"
+} > "$HOME/.zshrc"
+cat >> "$HOME/.zshrc" << 'ZSHRC'
+# Personal config (theme/aliases/p10k) from the HF bucket; absent -> bare shell.
+[ -r "$HERMES_PERSONAL_ZSHRC" ] && source "$HERMES_PERSONAL_ZSHRC"
+
+[[ -o interactive && -d $HOME/workspace && $PWD != $HOME/workspace && ( ${PWD:A} == ${HOME:A} || ${PWD:A} == ${HOME:A}/workspace ) ]] && cd "$HOME/workspace"
+
+# ── Install-capture wrappers (zsh-native mirror of the bash set in .bashrc) ──
+# Record interactive package installs into $STARTUP_FILE so they replay on the
+# next boot and survive Space restarts. STARTUP_FILE is baked below this heredoc.
+_hm_append() {
+  [ "${HERMES_CAPTURE_DISABLE:-0}" = "1" ] && return 0
+  local line="$*"
+  mkdir -p "${STARTUP_FILE:h}"
+  touch "$STARTUP_FILE"
+  chmod +x "$STARTUP_FILE" 2>/dev/null || true
+  grep -qxF -- "$line" "$STARTUP_FILE" 2>/dev/null || print -r -- "$line" >> "$STARTUP_FILE"
+}
+_hm_quote_args() { print -rn -- "${(j: :)${(@q)@}}"; }
+_hm_append_cmd() {
+  local cmd="$1"; shift
+  local args; args="$(_hm_quote_args "$@")"
+  if [ -n "$args" ]; then _hm_append "$cmd $args"; else _hm_append "$cmd"; fi
+}
+_hm_args_without_flags() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      ''|-|--*|-*) ;;
+      *) print -r -- "$arg" ;;
+    esac
+  done
+}
+_hm_has_install_targets() {
+  local item out
+  out="$(_hm_args_without_flags "$@")"
+  while IFS= read -r item; do
+    [ -n "$item" ] && return 0
+  done <<< "$out"
+  return 1
+}
+_hm_has_arg() {
+  local needle="$1"; shift
+  local arg
+  for arg in "$@"; do [ "$arg" = "$needle" ] && return 0; done
+  return 1
+}
+pip() {
+  command pip "$@"; local rc=$?
+  local -a rest; rest=("${(@)argv[2,-1]}")
+  if [ $rc -eq 0 ] && [ "${1:-}" = "install" ] \
+      && ! _hm_has_arg -r "$rest[@]" && ! _hm_has_arg --requirement "$rest[@]" \
+      && _hm_has_install_targets "$rest[@]"; then
+    _hm_append_cmd "pip install" "$rest[@]"
+  fi
+  return $rc
+}
+pip3() {
+  command pip3 "$@"; local rc=$?
+  local -a rest; rest=("${(@)argv[2,-1]}")
+  if [ $rc -eq 0 ] && [ "${1:-}" = "install" ] \
+      && ! _hm_has_arg -r "$rest[@]" && ! _hm_has_arg --requirement "$rest[@]" \
+      && _hm_has_install_targets "$rest[@]"; then
+    _hm_append_cmd "pip install" "$rest[@]"
+  fi
+  return $rc
+}
+uv() {
+  command uv "$@"; local rc=$?
+  local -a rest; rest=("${(@)argv[3,-1]}")
+  if [ $rc -eq 0 ] && [ "${1:-}" = "pip" ] && [ "${2:-}" = "install" ] \
+      && ! _hm_has_arg -r "$rest[@]" && ! _hm_has_arg --requirements "$rest[@]" \
+      && _hm_has_install_targets "$rest[@]"; then
+    _hm_append_cmd "uv pip install" "$rest[@]"
+  fi
+  return $rc
+}
+npm() {
+  command npm "$@"; local rc=$?
+  local -a rest; rest=("${(@)argv[3,-1]}")
+  if [ $rc -eq 0 ] && { [ "${1:-}" = "install" ] || [ "${1:-}" = "i" ]; } \
+      && { [ "${2:-}" = "-g" ] || [ "${2:-}" = "--global" ]; } \
+      && _hm_has_install_targets "$rest[@]"; then
+    _hm_append_cmd "npm install -g" "$rest[@]"
+  fi
+  return $rc
+}
+hermes() {
+  command hermes "$@"; local rc=$?
+  local -a rest; rest=("${(@)argv[3,-1]}")
+  if [ $rc -eq 0 ] && [ "${1:-}" = "plugins" ] && [ "${2:-}" = "install" ] \
+      && _hm_has_install_targets "$rest[@]"; then
+    _hm_append_cmd "hermes plugins install" "$rest[@]"
+  fi
+  return $rc
+}
+ZSHRC
+# Pin capture target to the exact boot-resolved path (interactive shell may not
+# inherit WORKSPACE_HOME); mirrors the .bashrc bake above.
+printf 'STARTUP_FILE=%q\n' "$STARTUP_FILE" >> "$HOME/.zshrc"
+echo "zsh interactive config ready ($HOME/.zshrc)."
 
 # ── Pool key promotion ──
 # Mirror first key from a pool var into the singular env var. Accepts both the
@@ -925,7 +1079,17 @@ else
 		AGENT_WORKSPACE="$WORKSPACE_HOME"
 	fi
 fi
+export TMATE_CWD="$AGENT_WORKSPACE"
 hermes config set terminal.cwd "$AGENT_WORKSPACE" 2>/dev/null || true
+TMUX_CONF="$HOME/.tmux.conf"
+if ! grep -qxF 'set -g mouse on' "$TMUX_CONF" 2>/dev/null; then
+	cat >> "$TMUX_CONF" <<'TMUXCONF'
+set -g mouse on
+bind c new-window -c "#{pane_current_path}"
+bind '"' split-window -v -c "#{pane_current_path}"
+bind % split-window -h -c "#{pane_current_path}"
+TMUXCONF
+fi
 hermes config set compression.enabled true 2>/dev/null || true
 # Redact secrets from agent output/logs by default — safe default for a hosted agent.
 hermes config set security.redact_secrets true 2>/dev/null || true
@@ -1052,14 +1216,11 @@ PY
 fi
 
 # ── SSH Debug Access (tmate) ──────────────────────────────────────────────────
-if command -v tmate >/dev/null 2>&1; then
-	echo "set -g mouse on" >"$HOME/.tmate.conf"
-	tmate -S /tmp/tmate.sock new-session -d 2>/dev/null || true
-	for attempt in 1 2 3 4 5; do
-		SSH_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
-		[ -n "${SSH_URL:-}" ] && break
-		sleep 1
-	done
+# Reuse the on-demand pool manager so the boot session is listed by tmate-ls,
+# killable via tmate-kill, opens in the workspace, and notifies the channel.
+if command -v tmate >/dev/null 2>&1 && command -v tmate-new >/dev/null 2>&1; then
+	echo "set -g mouse off" >"$HOME/.tmate.conf"
+	SSH_URL=$(tmate-new boot 2>/dev/null | sed -n 's/^ssh:[[:space:]]*//p') || true
 	[ -n "${SSH_URL:-}" ] && log "SSH access: $SSH_URL" || log "tmate unavailable for SSH debugging"
 fi
 

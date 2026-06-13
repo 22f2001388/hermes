@@ -25,6 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
      chromium \
      tmate \
      tmux \
+     zsh \
+     fzf \
+     zoxide \
+     bat \
+     eza \
+     gnupg \
+     neovim \
      libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -45,9 +52,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         "huggingface_hub>=1.18.0" hf_transfer pyyaml
 
+# GitHub CLI (`gh`) — not in the base apt repos, so add the official GitHub CLI
+# apt source + keyring first, then install. Own RUN so the third-party source and
+# its apt lists stay isolated from the main system-deps layer above.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
 # Coding agents on PATH for in-container use: Claude Code + opencode.
 RUN npm install -g @anthropic-ai/claude-code opencode-ai \
  && npm cache clean --force
+
+# zsh as the interactive shell: oh-my-zsh + powerlevel10k + the custom plugins
+# the seeded ~/.zshrc references (start.sh writes that .zshrc each boot). OMZ
+# lives in image-immutable /opt/oh-my-zsh (ZSH=) so it's independent of $HOME and
+# the runtime .zshrc disables its self-update. `bat` installs as `batcat` on
+# Debian — symlink it to `bat` for the MANPAGER + `cat` alias. chsh -> zsh so
+# tmate (and the in-app terminal) open zsh for the hermes user.
+RUN export ZSH=/opt/oh-my-zsh \
+ && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended --keep-zshrc \
+ && git clone --depth 1 https://github.com/romkatv/powerlevel10k.git        "$ZSH/custom/themes/powerlevel10k" \
+ && git clone --depth 1 https://github.com/zsh-users/zsh-autosuggestions     "$ZSH/custom/plugins/zsh-autosuggestions" \
+ && git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH/custom/plugins/zsh-syntax-highlighting" \
+ && git clone --depth 1 https://github.com/zsh-users/zsh-completions         "$ZSH/custom/plugins/zsh-completions" \
+ && git clone --depth 1 https://github.com/Aloxaf/fzf-tab                    "$ZSH/custom/plugins/fzf-tab" \
+ && chown -R hermes:hermes "$ZSH" \
+ && ln -sf /usr/bin/batcat /usr/local/bin/bat \
+ && grep -qxF /usr/bin/zsh /etc/shells 2>/dev/null || echo /usr/bin/zsh >> /etc/shells \
+ && usermod -s /usr/bin/zsh hermes
 
 # Clone WebUI; install deps using system pip (base image venv may not exist yet)
 RUN git clone --depth 1 --branch ${WEBUI_REF} \
@@ -61,6 +98,7 @@ RUN git clone --depth 1 --branch ${WEBUI_REF} \
 COPY --chown=hermes:hermes start.sh                       /opt/hermes/start.sh
 COPY --chown=hermes:hermes health-server.js               /opt/hermes/health-server.js
 COPY --chown=hermes:hermes hermes-sync.py                 /opt/hermes/hermes-sync.py
+COPY --chown=hermes:hermes tmate-tools.sh                 /opt/hermes/tmate-tools.sh
 COPY --chown=hermes:hermes cloudflare-proxy-setup.py      /opt/hermes/cloudflare-proxy-setup.py
 COPY --chown=hermes:hermes cloudflare-keepalive-setup.py  /opt/hermes/cloudflare-keepalive-setup.py
 COPY --chown=hermes:hermes env-builder.html               /opt/hermes/env-builder.html
@@ -70,8 +108,14 @@ COPY --chown=hermes:hermes hooks/                         /opt/hermes/hooks/
 RUN chmod +x \
     /opt/hermes/start.sh \
     /opt/hermes/hermes-sync.py \
+    /opt/hermes/tmate-tools.sh \
     /opt/hermes/cloudflare-proxy-setup.py \
     /opt/hermes/cloudflare-keepalive-setup.py
+
+# Expose the tmate session manager under three subcommand names on PATH.
+RUN ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-new \
+ && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-ls \
+ && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-kill
 
 # Idempotent kanban migration patch (from HuggingMes).
 # Wraps ALTER TABLE ADD COLUMN in try/except so a persisted DB with the
@@ -191,7 +235,8 @@ ENV HERMES_HOME=/opt/data \
     HERMES_WEBUI_TRUST_FORWARDED_HOST=1 \
     PYTHONUNBUFFERED=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
+    SHELL=/usr/bin/zsh
 
 EXPOSE 7861
 
