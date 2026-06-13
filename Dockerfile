@@ -177,6 +177,9 @@ PY
 # hermes user needs write access for auto-updates.
 RUN chown -R hermes:hermes /opt/hermes/.venv
 
+# hermes aliases its workspace under /home at startup
+RUN chown hermes:hermes /home
+
 # Keep hermes CLI on PATH for all shell types.
 RUN echo 'export PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:$PATH"' \
     > /etc/profile.d/hermes-venv.sh

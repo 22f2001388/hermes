@@ -21,12 +21,18 @@ APP_DIR="${HERMES_APP_DIR:-/opt/hermes}"
 WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
 HERMES_DATA_ROOT="${HERMES_HOME:-/opt/data}"
 
-# Per-agent state isolation (support multiple agents). Exported so hermes-sync.py
-# scopes both HERMES_HOME and its bucket prefix to this agent.
+# Per-agent isolation (support multiple agents). Exported so hermes-sync.py
+# scopes the backup root and bucket prefix to this agent.
 export AGENT_NAME="${AGENT_NAME:-primary}"
-HERMES_HOME="${HERMES_DATA_ROOT}/${AGENT_NAME}/.hermes"
-WORKSPACE_HOME="${HERMES_DATA_ROOT}/${AGENT_NAME}/workspace"
+# Agent home = a normal user-home layout: state in ~/.hermes, work in ~/workspace.
+AGENT_HOME="${HERMES_DATA_ROOT}/${AGENT_NAME}"
+HERMES_HOME="${AGENT_HOME}/.hermes"
+WORKSPACE_HOME="${AGENT_HOME}/workspace"
+# Friendly home alias; symlinked to AGENT_HOME below (cwd = $WORKSPACE_LINK/workspace).
+WORKSPACE_LINK="/home/${AGENT_NAME}"
 STARTUP_FILE="$WORKSPACE_HOME/startup.sh"
+# Back up the whole agent home (state + work). Exported for hermes-sync.py.
+export HERMES_BACKUP_ROOT="$AGENT_HOME"
 
 log "Agent: $AGENT_NAME"
 log "State: $HERMES_HOME"
@@ -56,6 +62,8 @@ TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8765}"
 WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 
 SYNC_INTERVAL="${SYNC_INTERVAL:-60}"
+# Back up .env into the bucket (plaintext secrets — accepted tradeoff). Exported for hermes-sync.py.
+export SYNC_INCLUDE_ENV="${SYNC_INCLUDE_ENV:-1}"
 # Shared bucket; each agent backs up under its AGENT_NAME prefix. Exported for hermes-sync.py.
 export BACKUP_BUCKET_NAME="${BACKUP_BUCKET_NAME:-hermes-backup}"
 BACKUP_BUCKET="$BACKUP_BUCKET_NAME"
@@ -92,7 +100,9 @@ if [ -n "${GATEWAY_TOKEN:-}" ]; then
 fi
 
 # ── Setup state dirs ──────────────────────────────────────────────────
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,plugins,webui}
+# workspace/ is created after the restore barrier below — restore may seed an
+# old-layout .hermes/workspace that has to be migrated up before we create it.
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,home,plugins,webui}
 
 # Idempotently seed gateway hooks from repo (overwrite to stay current).
 if [ -d "$APP_DIR/hooks" ]; then
@@ -169,6 +179,16 @@ if [ -n "$HERMES_RESTORE_PID" ]; then
 	wait "$HERMES_RESTORE_PID" || true
 	echo "HF restore complete."
 fi
+
+# Post-restore: an old-layout restore seeds .hermes/workspace, so migrate it up
+# only now (target-absent guard avoids clobber). Create the fresh dir only once
+# nothing is pending, so a failed mv retries next boot instead of being masked.
+if [ -d "$HERMES_HOME/workspace" ] && [ ! -e "$WORKSPACE_HOME" ]; then
+	mv "$HERMES_HOME/workspace" "$WORKSPACE_HOME" \
+		&& log "Migrated workspace -> $WORKSPACE_HOME" \
+		|| log "WARN: workspace migration failed; data left at $HERMES_HOME/workspace"
+fi
+[ -d "$HERMES_HOME/workspace" ] || mkdir -p "$WORKSPACE_HOME"
 
 # ── Memory-OS: seed consolidation skill + cron job (additive, idempotent) ──
 # Tiered self-managing memory (SPEC-B Phase 1). Working tier = state.db +
@@ -892,7 +912,20 @@ fi
 
 # ── Terminal/workspace ────────────────────────────────────────────────────────
 mkdir -p "$WORKSPACE_HOME"
-hermes config set terminal.cwd "$WORKSPACE_HOME" 2>/dev/null || true
+# Skip aliasing if a real path already occupies the link (don't clobber).
+if [ -e "$WORKSPACE_LINK" ] && [ ! -L "$WORKSPACE_LINK" ]; then
+	warn "$WORKSPACE_LINK exists as a real path; using $WORKSPACE_HOME"
+	AGENT_WORKSPACE="$WORKSPACE_HOME"
+else
+	if mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null \
+		&& ln -sfn "$AGENT_HOME" "$WORKSPACE_LINK" 2>/dev/null; then
+		AGENT_WORKSPACE="$WORKSPACE_LINK/workspace"
+	else
+		warn "could not create $WORKSPACE_LINK (permission?); using $WORKSPACE_HOME"
+		AGENT_WORKSPACE="$WORKSPACE_HOME"
+	fi
+fi
+hermes config set terminal.cwd "$AGENT_WORKSPACE" 2>/dev/null || true
 hermes config set compression.enabled true 2>/dev/null || true
 # Redact secrets from agent output/logs by default — safe default for a hosted agent.
 hermes config set security.redact_secrets true 2>/dev/null || true
@@ -1150,7 +1183,7 @@ export HERMES_WEBUI_PYTHON="/opt/hermes/.venv/bin/python"
 export HERMES_WEBUI_HOST="127.0.0.1"
 export HERMES_WEBUI_PORT
 export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-$HERMES_HOME/webui}"
-export HERMES_WEBUI_DEFAULT_WORKSPACE="${HERMES_WEBUI_DEFAULT_WORKSPACE:-$HERMES_HOME/workspace}"
+export HERMES_WEBUI_DEFAULT_WORKSPACE="${HERMES_WEBUI_DEFAULT_WORKSPACE:-$WORKSPACE_HOME}"
 export HERMES_WEBUI_AUTO_INSTALL="0"
 mkdir -p "$HERMES_WEBUI_STATE_DIR"
 
