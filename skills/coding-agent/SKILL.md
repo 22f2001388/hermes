@@ -58,6 +58,8 @@ claude -p "Refactor src/auth to use the new token helper; keep tests green." \
   cost) you can parse.
 - Pick a model with `--model <id>` if you need a specific one; otherwise the
   account default is used.
+- Tighten scope with `--allowedTools Read,Edit,Bash` (or a narrower subset) when
+  the task doesn't need full autonomy — fewer tools = smaller blast radius.
 
 **opencode** (multi-provider; good when you want a non-Anthropic model):
 
@@ -73,12 +75,18 @@ opencode run "Add a /healthz route to the server and a test for it."
 - `--format json` for machine-readable output; `--dir <path>` to set the working
   directory instead of `cd`.
 
-## Choosing which
+## Choosing which — by task shape
 
-- **claude-code** — default for careful, correctness-critical edits and when the
-  primary key is Anthropic.
-- **opencode** — when you want a specific non-Anthropic model, or to compare a
-  second opinion on the same task.
+- **Multi-file refactor / correctness-critical edit** → claude-code. Strongest at
+  holding a careful change across files and reasoning about edge cases.
+- **New feature / red-green test loop** → either; claude-code when the logic is
+  subtle, opencode (cheaper model) when it's mechanical.
+- **Codebase exploration / "how does X work"** → opencode on a long-context model
+  (`-m` a large-context id) or claude-code — reading is cheap, pick on budget.
+- **Second opinion on the same task** → run opencode with a non-Anthropic model
+  and diff the two results.
+- **Tight budget** → opencode on a free/cheap model (default `mimo-v2.5-free`);
+  claude-code spends Anthropic budget on every call.
 
 ## Guardrails
 
@@ -90,3 +98,11 @@ opencode run "Add a /healthz route to the server and a test for it."
   their output rather than retrying blindly.
 - Treat any file change they make as you would your own — review before
   presenting it as done.
+- **Delegate on a clean tree.** Commit or stash first, then let the agent work, so
+  you can `git diff` exactly what it changed and `git checkout .` to roll back a
+  bad run. (On ephemeral HF FS the diff-review still matters even without history.)
+- **Never let a delegated agent run these** — scope the prompt and `--allowedTools`
+  so it can't: `rm -rf` outside the workspace, `git push` / `git push --force`,
+  `curl … | sh` or `… | bash` (remote-code exec), credential or `.env`
+  exfiltration, or package publishes. If a task seems to need one, stop and do it
+  yourself.
