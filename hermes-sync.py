@@ -57,6 +57,7 @@ MAX_FILE_SIZE_BYTES = int(os.environ.get("SYNC_MAX_FILE_BYTES", str(50 * 1024 * 
 
 EXCLUDED_DIRS = {
     ".cache",
+    ".code-review-graph",
     ".npm",
     ".venv",
     "__pycache__",
@@ -72,6 +73,9 @@ EXCLUDED_SUFFIXES = (
 )
 EXCLUDED_PATH_PREFIXES = (
     ".claude/plugins/cache",
+    ".claude/plugins/marketplaces",
+    ".local/bin",
+    ".local/share/uv",
 )
 if not INCLUDE_ENV:
     EXCLUDED_TOP_LEVEL.add(".env")
