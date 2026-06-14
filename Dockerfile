@@ -94,29 +94,22 @@ RUN git clone --depth 1 --branch ${WEBUI_REF} \
  && chown -R hermes:hermes /opt/hermes-webui
 
 COPY --chown=hermes:hermes start.sh                       /opt/hermes/start.sh
-COPY --chown=hermes:hermes keys-sync.py                   /opt/hermes/keys-sync.py
 COPY --chown=hermes:hermes shell/                         /opt/hermes/shell/
-COPY --chown=hermes:hermes health-server.js               /opt/hermes/health-server.js
-COPY --chown=hermes:hermes lib/                           /opt/hermes/lib/
-COPY --chown=hermes:hermes hermes-sync.py                 /opt/hermes/hermes-sync.py
-COPY --chown=hermes:hermes tmate-tools.sh                 /opt/hermes/tmate-tools.sh
-COPY --chown=hermes:hermes cloudflare-proxy-setup.py      /opt/hermes/cloudflare-proxy-setup.py
-COPY --chown=hermes:hermes cloudflare-keepalive-setup.py  /opt/hermes/cloudflare-keepalive-setup.py
-COPY --chown=hermes:hermes env-builder.html               /opt/hermes/env-builder.html
-COPY --chown=hermes:hermes env-builder.js                 /opt/hermes/env-builder.js
-COPY --chown=hermes:hermes env-builder-data.js            /opt/hermes/env-builder-data.js
 COPY --chown=hermes:hermes hooks/                         /opt/hermes/hooks/
+COPY --chown=hermes:hermes sync/                          /opt/hermes/sync/
+COPY --chown=hermes:hermes network/                       /opt/hermes/network/
+COPY --chown=hermes:hermes server/                        /opt/hermes/server/
 
 RUN chmod +x \
     /opt/hermes/start.sh \
-    /opt/hermes/hermes-sync.py \
-    /opt/hermes/tmate-tools.sh \
-    /opt/hermes/cloudflare-proxy-setup.py \
-    /opt/hermes/cloudflare-keepalive-setup.py
+    /opt/hermes/sync/hermes-sync.py \
+    /opt/hermes/network/tmate-tools.sh \
+    /opt/hermes/network/cloudflare-proxy-setup.py \
+    /opt/hermes/network/cloudflare-keepalive-setup.py
 
-RUN ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-new \
- && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-ls \
- && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-kill
+RUN ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-new \
+ && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-ls \
+ && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-kill
 
 # Idempotent: ALTER TABLE ADD COLUMN wrapped in try/except to tolerate existing column or upstream fix.
 RUN python3 - <<'PY'

@@ -98,7 +98,7 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res)) return;
     try {
       const html = fs.readFileSync(
-        require("path").join(__dirname, "env-builder.html"),
+        require("path").join(__dirname, "public", "env-builder.html"),
         "utf8",
       );
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -114,7 +114,7 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res)) return;
     try {
       const js = fs.readFileSync(
-        require("path").join(__dirname, "env-builder.js"),
+        require("path").join(__dirname, "public", "env-builder.js"),
         "utf8",
       );
       res.writeHead(200, {
@@ -132,7 +132,7 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res)) return;
     try {
       const js = fs.readFileSync(
-        require("path").join(__dirname, "env-builder-data.js"),
+        require("path").join(__dirname, "public", "env-builder-data.js"),
         "utf8",
       );
       res.writeHead(200, {

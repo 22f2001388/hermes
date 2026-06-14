@@ -164,7 +164,7 @@ fi
 HERMES_RESTORE_PID=""
 if [ -n "${HF_TOKEN:-}" ]; then
 	echo "Restoring Hermes state from HF bucket ${BACKUP_BUCKET}/${AGENT_NAME}"
-	python3 "$APP_DIR/hermes-sync.py" restore &
+	python3 "$APP_DIR/sync/hermes-sync.py" restore &
 	HERMES_RESTORE_PID=$!
 else
 	echo "HF_TOKEN not set - bucket persistence is disabled."
@@ -176,7 +176,7 @@ export CLOUDFLARE_WORKERS_TOKEN
 if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
 	export CLOUDFLARE_PROXY_DEBUG="${CLOUDFLARE_PROXY_DEBUG:-false}"
 	echo "Preparing Cloudflare Telegram proxy"
-	python3 "$APP_DIR/cloudflare-proxy-setup.py" || true
+	python3 "$APP_DIR/network/cloudflare-proxy-setup.py" || true
 	if [ -f "$CF_PROXY_ENV_FILE" ]; then
 		. "$CF_PROXY_ENV_FILE"
 	fi
@@ -184,7 +184,7 @@ fi
 
 if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
 	echo "Preparing Cloudflare Keepalive worker"
-	python3 "$APP_DIR/cloudflare-keepalive-setup.py" || true
+	python3 "$APP_DIR/network/cloudflare-keepalive-setup.py" || true
 fi
 
 # Join the async restore before anything reads $HERMES_HOME. Non-fatal.
@@ -634,7 +634,7 @@ fi
 
 # ── Idempotent API-key sync (pools + singular provider keys) ────────────────
 log "Syncing API keys (idempotent)"
-python3 "$APP_DIR/keys-sync.py" || warn "key sync failed (continuing)"
+python3 "$APP_DIR/sync/keys-sync.py" || warn "key sync failed (continuing)"
 
 # ── Set model + provider via CLI (more reliable than YAML) ───────────────────
 hermes config set model "$MODEL_FOR_CONFIG" &&
@@ -831,7 +831,7 @@ log ""
 # ── Process launchers ─────────────────────────────────────────────────
 # Supervisor loop restarts dead services via these launchers.
 start_health() {
-	node "$APP_DIR/health-server.js" &
+	node "$APP_DIR/server/health-server.js" &
 	HEALTH_PID=$!
 }
 
@@ -862,14 +862,14 @@ start_sync_loop() {
 	if [ -n "${SYNC_LOOP_PID:-}" ] && kill -0 "$SYNC_LOOP_PID" 2>/dev/null; then
 		return 0
 	fi
-	python3 -u "$APP_DIR/hermes-sync.py" loop &
+	python3 -u "$APP_DIR/sync/hermes-sync.py" loop &
 	SYNC_LOOP_PID=$!
 }
 
 # No-op without HF_TOKEN.
 sync_now() {
 	[ -n "${HF_TOKEN:-}" ] || return 0
-	python3 "$APP_DIR/hermes-sync.py" sync-once || echo "Warning: state sync failed."
+	python3 "$APP_DIR/sync/hermes-sync.py" sync-once || echo "Warning: state sync failed."
 }
 
 # notify_online() — migrated to gateway:startup hook (hooks/hermes-online).
