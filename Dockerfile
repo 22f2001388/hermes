@@ -94,13 +94,17 @@ RUN git clone --depth 1 --branch ${WEBUI_REF} \
  && chown -R hermes:hermes /opt/hermes-webui
 
 COPY --chown=hermes:hermes start.sh                       /opt/hermes/start.sh
+COPY --chown=hermes:hermes keys-sync.py                   /opt/hermes/keys-sync.py
+COPY --chown=hermes:hermes shell/                         /opt/hermes/shell/
 COPY --chown=hermes:hermes health-server.js               /opt/hermes/health-server.js
+COPY --chown=hermes:hermes lib/                           /opt/hermes/lib/
 COPY --chown=hermes:hermes hermes-sync.py                 /opt/hermes/hermes-sync.py
 COPY --chown=hermes:hermes tmate-tools.sh                 /opt/hermes/tmate-tools.sh
 COPY --chown=hermes:hermes cloudflare-proxy-setup.py      /opt/hermes/cloudflare-proxy-setup.py
 COPY --chown=hermes:hermes cloudflare-keepalive-setup.py  /opt/hermes/cloudflare-keepalive-setup.py
 COPY --chown=hermes:hermes env-builder.html               /opt/hermes/env-builder.html
 COPY --chown=hermes:hermes env-builder.js                 /opt/hermes/env-builder.js
+COPY --chown=hermes:hermes env-builder-data.js            /opt/hermes/env-builder-data.js
 COPY --chown=hermes:hermes hooks/                         /opt/hermes/hooks/
 
 RUN chmod +x \
