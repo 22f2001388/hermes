@@ -38,13 +38,7 @@ function renderPrivateRedirect(targetUrl) {
     <a class="btn" href="${safeUrl}">Open on Hugging Face →</a>
     <div class="sub">Redirecting in 3 seconds&hellip;</div>
   </div>
-  <script>
-    // Only auto-redirect when NOT inside an iframe — navigating an iframe to
-    // huggingface.co is blocked by X-Frame-Options and causes "refused to connect".
-    const _inFrame = (() => { try { return window.top !== window.self; } catch { return true; } })();
-    // Don't auto-redirect in iframes — X-Frame-Options blocks navigation.
-    }
-  </script>
+  <script></script>
 </body></html>`;
 }
 

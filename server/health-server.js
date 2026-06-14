@@ -276,7 +276,8 @@ const server = http.createServer(async (req, res) => {
     "/chat",
     "/docs",
   ]);
-  if (dashboardRootRoutes.has(path) || [...dashboardRootRoutes].some((r) => path.startsWith(r + "/"))) {
+  const dashboardRootRoutesList = [...dashboardRootRoutes];
+  if (dashboardRootRoutes.has(path) || dashboardRootRoutesList.some((r) => path.startsWith(r + "/"))) {
     redirect(res, `${HM_PREFIX}/app${path}${parsed.search}`);
     return;
   }

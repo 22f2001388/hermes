@@ -38,12 +38,14 @@ function formatUptime(ms) {
 }
 
 async function statusPayload() {
-  const gateway = await canConnect(config.GATEWAY_PORT);
-  const dashboard = await canConnect(config.DASHBOARD_PORT);
-  const webui = await canConnect(config.WEBUI_PORT);
-  const telegramWebhook =
-    !!process.env.TELEGRAM_WEBHOOK_URL &&
-    (await canConnect(config.TELEGRAM_WEBHOOK_PORT));
+  const [gateway, dashboard, webui, telegramWebhook] = await Promise.all([
+    canConnect(config.GATEWAY_PORT),
+    canConnect(config.DASHBOARD_PORT),
+    canConnect(config.WEBUI_PORT),
+    process.env.TELEGRAM_WEBHOOK_URL
+      ? canConnect(config.TELEGRAM_WEBHOOK_PORT)
+      : Promise.resolve(false),
+  ]);
   const sync = readJson(
     config.SYNC_STATUS_FILE,
     process.env.HF_TOKEN

@@ -4,11 +4,14 @@
 Args: argv[1] = path to known_marketplaces.json
       argv[2] = path to marketplaces directory
 """
-import json, os, sys
+import json
+import os
+import sys
 
 km, mdir = sys.argv[1], sys.argv[2]
 try:
-    data = json.load(open(km))
+    with open(km) as f:
+        data = json.load(f)
 except Exception:
     sys.exit(0)
 entries = data.get("marketplaces", data) if isinstance(data, dict) else {}

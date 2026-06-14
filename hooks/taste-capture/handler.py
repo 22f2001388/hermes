@@ -43,6 +43,9 @@ _SECRET_RES = (
     re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
 )
+_MSG_MAX_LEN = 300
+_SCAN_LIMIT = 40
+_SEEN_CAP = 500
 
 
 def _redact(text: str) -> str:

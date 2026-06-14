@@ -150,6 +150,29 @@ function redirect(res, location, statusCode = 302) {
   res.end();
 }
 
+function _rewriteDashboardBody(upRes, res, rawBuffer) {
+  let body = rawBuffer.toString("utf8");
+  body = body.replace(
+    /window\.__HERMES_BASE_PATH__\s*=\s*"[^"]*"/g,
+    `window.__HERMES_BASE_PATH__="${config.HM_PREFIX}/app"`,
+  );
+  const prefix = `${config.HM_PREFIX}/app`;
+  body = body.replace(
+    /\b(src|href)="\/(?!\/|http)([^"]*)"/g,
+    (match, attr, rest) => {
+      if (("/" + rest).startsWith(prefix + "/") || "/" + rest === prefix) return match;
+      return `${attr}="${prefix}/${rest}"`;
+    },
+  );
+  const buf = Buffer.from(body, "utf8");
+  const outHeaders = { ...upRes.headers };
+  delete outHeaders["content-length"];
+  delete outHeaders["transfer-encoding"];
+  delete outHeaders["content-encoding"];
+  outHeaders["content-length"] = String(buf.length);
+  res.writeHead(upRes.statusCode || 502, outHeaders);
+  res.end(buf);
+}
 function proxyDashboard(req, res) {
   const parsed = new URL(req.url, "http://localhost");
   const inner = parsed.pathname.replace(`${config.HM_PREFIX}/app`, "") || "/";
@@ -218,44 +241,8 @@ function proxyDashboard(req, res) {
 
           const chunks = [];
           upRes.on("data", (chunk) => chunks.push(chunk));
-          upRes.on("end", () => {
-            let body = Buffer.concat(chunks).toString("utf8");
-
-            body = body.replace(
-              /window\.__HERMES_BASE_PATH__\s*=\s*"[^"]*"/g,
-              `window.__HERMES_BASE_PATH__="${config.HM_PREFIX}/app"`,
-            );
-
-            const prefix = `${config.HM_PREFIX}/app`;
-            body = body.replace(
-              /\b(src|href)="\/(?!\/|http)([^"]*)"/g,
-              (match, attr, rest) => {
-                if (
-                  ("/" + rest).startsWith(prefix + "/") ||
-                  "/" + rest === prefix
-                ) {
-                  return match;
-                }
-                return `${attr}="${prefix}/${rest}"`;
-              },
-            );
-
-            const buf = Buffer.from(body, "utf8");
-            const outHeaders = { ...upRes.headers };
-            delete outHeaders["content-length"];
-            delete outHeaders["transfer-encoding"];
-            delete outHeaders["content-encoding"];
-            outHeaders["content-length"] = String(buf.length);
-
-            res.writeHead(upRes.statusCode || 502, outHeaders);
-            res.end(buf);
-          });
-          upRes.on("error", () => {
-            try {
-              res.writeHead(502);
-              res.end();
-            } catch {}
-          });
+          upRes.on("end", () => _rewriteDashboardBody(upRes, res, Buffer.concat(chunks)));
+          upRes.on("error", () => { try { res.writeHead(502); res.end(); } catch {} });
         },
       );
 
@@ -312,44 +299,8 @@ function proxyDashboard(req, res) {
 
       const chunks = [];
       upRes.on("data", (chunk) => chunks.push(chunk));
-      upRes.on("end", () => {
-        let body = Buffer.concat(chunks).toString("utf8");
-
-        body = body.replace(
-          /window\.__HERMES_BASE_PATH__\s*=\s*"[^"]*"/g,
-          `window.__HERMES_BASE_PATH__="${config.HM_PREFIX}/app"`,
-        );
-
-        const prefix = `${config.HM_PREFIX}/app`;
-        body = body.replace(
-          /\b(src|href)="\/(?!\/|http)([^"]*)"/g,
-          (match, attr, rest) => {
-            if (
-              ("/" + rest).startsWith(prefix + "/") ||
-              "/" + rest === prefix
-            ) {
-              return match;
-            }
-            return `${attr}="${prefix}/${rest}"`;
-          },
-        );
-
-        const buf = Buffer.from(body, "utf8");
-        const outHeaders = { ...upRes.headers };
-        delete outHeaders["content-length"];
-        delete outHeaders["transfer-encoding"];
-        delete outHeaders["content-encoding"];
-        outHeaders["content-length"] = String(buf.length);
-
-        res.writeHead(upRes.statusCode || 502, outHeaders);
-        res.end(buf);
-      });
-      upRes.on("error", () => {
-        try {
-          res.writeHead(502);
-          res.end();
-        } catch {}
-      });
+      upRes.on("end", () => _rewriteDashboardBody(upRes, res, Buffer.concat(chunks)));
+      upRes.on("error", () => { try { res.writeHead(502); res.end(); } catch {} });
     },
   );
 

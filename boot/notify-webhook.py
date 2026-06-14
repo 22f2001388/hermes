@@ -4,7 +4,9 @@
 Env: WEBHOOK_URL        — URL to POST to.
      MODEL_FOR_CONFIG   — model name to include in the payload.
 """
-import json, os, urllib.request
+import json
+import os
+import urllib.request
 
 body = json.dumps({
     "event": "restart",
@@ -14,4 +16,5 @@ body = json.dumps({
 }).encode()
 req = urllib.request.Request(os.environ["WEBHOOK_URL"], data=body, method="POST",
                              headers={"Content-Type": "application/json"})
-urllib.request.urlopen(req, timeout=10).read()
+with urllib.request.urlopen(req, timeout=10) as r:
+    r.read()
