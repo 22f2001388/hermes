@@ -155,6 +155,7 @@ echo "Shell capture wrappers ready."
 } > "$HOME/.zshrc"
 cat "$APP_DIR/shell/zshrc-capture.zsh" >> "$HOME/.zshrc"
 printf 'STARTUP_FILE=%q\n' "$STARTUP_FILE" >> "$HOME/.zshrc"
+printf 'HERMES_ENV_FILE=%q\n' "$HERMES_HOME/.env" >> "$HOME/.zshrc"
 echo "zsh interactive config ready ($HOME/.zshrc)."
 
 # ── Restore state from HF Storage Bucket (async, gated) ───────────────
@@ -718,6 +719,13 @@ if [ -s "$STARTUP_FILE" ]; then
 fi
 
 start_dashboard
+
+if [ -f "$HERMES_HOME/.env" ]; then
+	echo "Sourcing captured shell env from \$HERMES_HOME/.env"
+	set -a
+	. "$HERMES_HOME/.env"
+	set +a
+fi
 
 start_gateway
 start_webui

@@ -8,6 +8,9 @@ services:
     image: hermes-webui:local
     ports:
       - "7861:7861"
+    env_file:
+      - path: .env
+        required: false
     environment:
       AGENT_NAME: ${AGENT_NAME:-primary}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-}

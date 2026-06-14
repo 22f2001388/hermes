@@ -92,3 +92,36 @@ hermes() {
   fi
   return $rc
 }
+_hm_persist_env() {
+	local k="$1" v="$2" tmp
+	mkdir -p "${HERMES_ENV_FILE:h}"
+	touch "$HERMES_ENV_FILE"
+	chmod 600 "$HERMES_ENV_FILE" 2>/dev/null || true
+	tmp="$HERMES_ENV_FILE.tmp.$$"
+	grep -vE "^export ${k}=" "$HERMES_ENV_FILE" 2>/dev/null > "$tmp" || true
+	mv "$tmp" "$HERMES_ENV_FILE" || true
+	rm -f "$tmp" 2>/dev/null
+	print -r -- "export $k=${(q)v}" >> "$HERMES_ENV_FILE"
+}
+typeset -gA _HM_ENV_SEEN
+_hm_env_capture() {
+	[ "${HERMES_CAPTURE_DISABLE:-0}" = "1" ] && return 0
+	[ -n "${HERMES_ENV_FILE:-}" ] || return 0
+	local k v
+	for k in ${(k)parameters}; do
+		[[ ${parameters[$k]} == *export* ]] || continue
+		case "$k" in
+			PATH|PS1|PWD|OLDPWD|SHLVL|HOME|_|TERM|HISTFILE|LS_COLORS|LINES|COLUMNS|DEBIAN_FRONTEND|STARTUP_FILE|HERMES_ENV_FILE|HERMES_PERSONAL_ZSHRC|HERMES_CAPTURE_DISABLE) continue ;;
+		esac
+		v=${(P)k}
+		[[ ${_HM_ENV_SEEN[$k]-$'\0'} == "$v" ]] && continue
+		_HM_ENV_SEEN[$k]=$v
+		_hm_persist_env "$k" "$v"
+	done
+}
+for _hm_k in ${(k)parameters}; do
+	[[ ${parameters[$_hm_k]} == *export* ]] && _HM_ENV_SEEN[$_hm_k]=${(P)_hm_k}
+done
+unset _hm_k
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _hm_env_capture
