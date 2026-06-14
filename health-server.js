@@ -40,10 +40,7 @@ function deriveHfSpaceUrl() {
 }
 const HF_SPACE_URL = deriveHfSpaceUrl();
 
-// Privacy detection priority:
-//   1. SPACE_PRIVACY env var ("public"/"private") — explicit override, skip API call
-//   2. HF API auto-detect with retry
-//   3. Fail-secure: treat as private if SPACE_ID set
+// Privacy detection: explicit SPACE_PRIVACY env > HF API auto-detect > fail-secure (private if SPACE_ID set)
 const _spacPrivacyEnv = (process.env.SPACE_PRIVACY || "").trim().toLowerCase();
 let SPACE_IS_PRIVATE;
 let _privacyDetectionDone = false;
@@ -264,8 +261,7 @@ function renderPrivateRedirect(targetUrl) {
     // Only auto-redirect when NOT inside an iframe — navigating an iframe to
     // huggingface.co is blocked by X-Frame-Options and causes "refused to connect".
     const _inFrame = (() => { try { return window.top !== window.self; } catch { return true; } })();
-    if (!_inFrame) {
-      setTimeout(() => { window.location.replace(${JSON.stringify(targetUrl)}); }, 100);
+    // Don't auto-redirect in iframes — X-Frame-Options blocks navigation.
     }
   </script>
 </body></html>`;
@@ -406,8 +402,7 @@ function requireAuth(req, res) {
 // unauthenticated WebUI proxy fallback (HTTP and WebSocket upgrade).
 const WEBUI_EXEC_PATHS = new Set([
   "/api/terminal/start",
-  "/api/terminal/input",
-  "/api/terminal/resize",
+// RCE-class paths — gated at router before unauthenticated WebUI proxy fallback.
   "/api/terminal/close",
   "/api/terminal/output",
   "/api/commands/exec",
@@ -433,8 +428,8 @@ function proxyRequest(
   if (hasBody) {
     const chunks = [];
     let size = 0;
-    const limit = 20 * 1024 * 1024; // 20MB cap
 
+    const limit = 20 * 1024 * 1024;
     req.on("data", (chunk) => {
       chunks.push(chunk);
       size += chunk.length;
@@ -550,7 +545,7 @@ function proxyDashboard(req, res) {
   if (hasBody) {
     const chunks = [];
     let size = 0;
-    const limit = 20 * 1024 * 1024; // 20MB cap
+    const limit = 20 * 1024 * 1024;
 
     req.on("data", (chunk) => {
       chunks.push(chunk);
@@ -989,8 +984,7 @@ function renderStatusPage(data) {
     }
     formatLocalTimes(document);
 
-    // Live-poll the tiles fragment so ops status refreshes without a reload.
-    // Fragment is first-party, server-escaped HTML; parsed into nodes (no innerHTML sink).
+    // First-party fragment; DOMParser → nodes (no innerHTML sink).
     const overview = document.querySelector('.overview');
     const POLL_MIN_MS = 2000;
     const POLL_MAX_MS = 10000;
@@ -999,8 +993,7 @@ function renderStatusPage(data) {
       if (polling || document.hidden || !overview) return;
       polling = true;
       try {
-        // redirect:'manual' so an expired-session 302->login yields ok:false
-        // instead of following through and replacing tiles with the login page.
+        // redirect:'manual' prevents expired-session 302 from replacing tiles with login page.
         const res = await fetch('${HM_PREFIX}/tiles', { cache: 'no-store', redirect: 'manual' });
         if (!res.ok) return;
         const parsed = new DOMParser().parseFromString(await res.text(), 'text/html');
@@ -1012,7 +1005,7 @@ function renderStatusPage(data) {
         polling = false;
       }
     }
-    // Jittered 2-10s interval: decorrelates polls across open tabs, fresh delay each tick.
+    // Jitter decorrelates polls across open tabs.
     function scheduleNext() {
       const delay = POLL_MIN_MS + Math.random() * (POLL_MAX_MS - POLL_MIN_MS);
       setTimeout(async () => {
@@ -1021,8 +1014,6 @@ function renderStatusPage(data) {
       }, delay);
     }
     scheduleNext();
-
-    // Sync privacy detection on client side.
     const inEmbeddedApp = (() => { try { return window.top !== window.self; } catch { return true; } })();
     const isDirectHfSpaceHost = /\.hf\.space$/i.test(window.location.hostname);
     const HF_SPACE_URL = ${JSON.stringify(HF_SPACE_URL)};
@@ -1064,10 +1055,7 @@ const server = http.createServer(async (req, res) => {
 
   if (path === "/health") {
     const data = await statusPayload();
-    // Always 200 so the HF Space platform probe keeps the container alive while
-    // the gateway warms up or the supervisor respawns it; truthful health is in
-    // the body (ok/gateway/webui) and at /status. A 503 here makes HF kill a
-    // container the supervisor would have recovered on its own.
+    // Always 200: HF kills containers on 503 even when supervisor would recover; truthful status is in body.
     res.writeHead(200, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
@@ -1087,16 +1075,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Lightweight endpoint for client-side privacy fallback.
-  // Called by status page JS to correct stale server-rendered SPACE_IS_PRIVATE value.
-  // No auth required — not sensitive.
+  // Client-side privacy fallback; no auth needed — not sensitive.
   if (path === "/api/is-private") {
     if (!_privacyDetectionDone) await privacyDetectionReady;
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     return res.end(JSON.stringify({ isPrivate: SPACE_IS_PRIVATE }));
   }
 
-  // Private Space redirect unauth route — external entry point that always redirects.
   if (path === "/hf-redirect" || path === "/hf-redirect/") {
     if (HF_SPACE_URL) {
       res.writeHead(302, { location: HF_SPACE_URL, "cache-control": "no-store" });
@@ -1106,7 +1091,6 @@ const server = http.createServer(async (req, res) => {
     return res.end("SPACE_ID not configured.");
   }
 
-  // ENV Builder — token-gated helper that generates a .env from a guided form.
   if (path === "/env-builder" || path === "/env-builder/") {
     if (!requireAuth(req, res)) return;
     try {
@@ -1199,7 +1183,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /hm/tiles — rendered status tiles fragment for the live-poll on the status page.
   if (path === `${HM_PREFIX}/tiles`) {
     if (!requireAuth(req, res)) return;
     const data = await statusPayload();
@@ -1211,8 +1194,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // /hm/logs — view service logs without needing HF Pro SSH.
-  // Auth-gated (same as /hm status page). Supports ?tail=N to limit lines.
   if (path === `${HM_PREFIX}/logs` || path.startsWith(`${HM_PREFIX}/logs/`)) {
     if (!requireAuth(req, res)) return;
     const logDir = process.env.HERMES_HOME
@@ -1327,10 +1308,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Private Space redirect for HTML root requests ──
-  // On a public HF Space, never redirect. On a private Space hit directly via
-  // .hf.space (not HF-logged-in, not framed), serve a "private space" page
-  // that meta-refreshes to the canonical HF URL but suppresses the redirect
-  // inside an iframe (avoids X-Frame-Options: DENY "refused to connect").
+  // Private Spaces: redirect direct .hf.space hits; suppress in iframes (X-Frame-Options blocks navigation).
   const isHtmlReq = (req.headers.accept || "").includes("text/html");
   const isDirectHfSpaceReq = SPACE_IS_PRIVATE &&
     HF_SPACE_URL &&
@@ -1357,9 +1335,7 @@ const server = http.createServer(async (req, res) => {
   proxyRequest(req, res, WEBUI_PORT);
 });
 
-// HF's load balancer holds long-lived streaming responses open; disable Node's
-// default socket timeout so long SSE/agent streams aren't dropped, and keep
-// keepAliveTimeout above the LB's ~60s idle window.
+// Disable socket timeout for HF LB's long-lived streams; keepAliveTimeout > LB's ~60s idle window.
 server.timeout = 0;
 server.keepAliveTimeout = 65000;
 
@@ -1371,8 +1347,7 @@ server.on("upgrade", (req, clientSocket, head) => {
   const parsed = new URL(req.url, "http://localhost");
   const path = parsed.pathname;
 
-  // Same router-level gate as the HTTP path: terminal/exec upgrades require
-  // auth. No res object here, so reject the socket directly.
+  // Exec auth gate for WS upgrade — no res object, reject socket directly.
   if (isWebuiExecPath(path) && !WEBUI_HAS_PASSWORD && !isAuthorized(req)) {
     try {
       clientSocket.end("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -1416,9 +1391,7 @@ server.on("upgrade", (req, clientSocket, head) => {
   const localHost = `${GATEWAY_HOST}:${targetPort}`;
   const upstream = net.createConnection(targetPort, GATEWAY_HOST, () => {
     
-    // Rewrite Host to the local backend so the dashboard/gateway accept the
-    // WebSocket origin. Desktop app → HF proxy sends Host: <space>.hf.space
-    // but the dashboard checks against its own bind address (127.0.0.1:PORT).
+    // Rewrite Host/Origin so backends accept WS handshake (HF proxy sends <space>.hf.space).
     const headerLines = [
       `${req.method} ${targetPath} HTTP/1.1`,
       `X-Forwarded-Host: ${req.headers.host || ""}`,
@@ -1428,8 +1401,7 @@ server.on("upgrade", (req, clientSocket, head) => {
       // Skip inbound forwarded headers — re-injected above to avoid duplicates.
       const lower = name.toLowerCase();
       if (lower === "x-forwarded-host" || lower === "x-forwarded-proto") continue;
-      // Rewrite Host and Origin so the backend accepts the WS handshake.
-      // The dashboard's origin guard checks Origin against its own host.
+      // Dashboard origin guard checks Origin against its own host.
       if (lower === "host") {
         headerLines.push(`Host: ${localHost}`);
         continue;

@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 # Local per-agent launcher: ./run.sh <agent> [up|down|logs|build]
-#
-# Each agent runs in its own compose project (hermes-<agent>), so its named
-# volume — and thus its HERMES_HOME and HF bucket prefix — never collide with
-# another agent's. The root .env is loaded by compose itself (env_file +
-# native interpolation); here we only export AGENT_NAME for that interpolation.
 set -euo pipefail
 
 RAW_NAME="${1:-primary}"

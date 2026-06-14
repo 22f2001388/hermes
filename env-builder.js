@@ -88,7 +88,6 @@ const MODEL_CATALOGS = {
   }
 };
 
-// Icons per group
 const ICONS = {
   "All":       "🌐",
   "Core":      "⚡",

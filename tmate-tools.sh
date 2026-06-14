@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# On-demand tmate sessions for external SSH/web access. Each runs on its own
-# socket under TMATE_DIR; the sockets are the source of truth (no registry).
+# On-demand tmate sessions for external SSH/web access.
 # Symlinked as tmate-new / tmate-ls / tmate-kill, or `tmate-tools <cmd>`.
 set -euo pipefail
 shopt -s nullglob
@@ -17,7 +16,6 @@ _die() {
 }
 command -v tmate >/dev/null 2>&1 || _die "tmate not installed"
 
-# Live if the socket answers; otherwise clear the stale file.
 _alive() {
 	if [ -S "$1" ] && tmate -S "$1" display -p '#{session_name}' >/dev/null 2>&1; then
 		return 0
@@ -28,11 +26,9 @@ _alive() {
 
 _name_of() { tmate -S "$1" display -p '#{session_name}' 2>/dev/null || true; }
 
-# Escape text for Telegram MarkdownV2 (backslash first, then the reserved set).
 _md2() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[][_*()~`>#+=|{}.!-]/\\&/g'; }
 
-# Best-effort Telegram notify. Reads creds from env, falling back to .env;
-# uses TELEGRAM_BASE_URL (proxy) when set. Never fails the caller. TMATE_NOTIFY=0 disables.
+# Telegram notify (best-effort; never fails caller). TMATE_NOTIFY=0 disables.
 _notify() {
 	[ "${TMATE_NOTIFY:-1}" = "0" ] && return 0
 	command -v curl >/dev/null 2>&1 || return 0
@@ -74,7 +70,6 @@ cmd_new() {
 	[ -n "$name" ] || name=$(basename "$sock" .sock)
 	_socket_for "$name" >/dev/null && _die "session '$name' already exists"
 
-	# Open in the workspace by default; fall back to $PWD then $HOME.
 	cwd="${TMATE_CWD:-$PWD}"
 	[ -d "$cwd" ] || cwd="$HOME"
 
@@ -101,7 +96,6 @@ cmd_new() {
 	echo "web:     $web"
 	echo "web_ro:  $web_ro"
 
-	# ssh in a copyable bash block; web as a bare (escaped) link.
 	_notify "$(printf 'New tmate session: %s\n```bash\n%s\n```\nweb: %s' \
 		"$(_md2 "$name")" "$ssh" "$(_md2 "$web")")"
 }

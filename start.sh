@@ -21,8 +21,7 @@ APP_DIR="${HERMES_APP_DIR:-/opt/hermes}"
 WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
 HERMES_DATA_ROOT="${HERMES_HOME:-/opt/data}"
 
-# Per-agent isolation (support multiple agents). Exported so hermes-sync.py
-# scopes the backup root and bucket prefix to this agent.
+# Exported: hermes-sync.py scopes the backup root + bucket prefix per agent.
 export AGENT_NAME="${AGENT_NAME:-primary}"
 # Agent home = a normal user-home layout: state in ~/.hermes, work in ~/workspace.
 AGENT_HOME="${HERMES_DATA_ROOT}/${AGENT_NAME}"
@@ -47,9 +46,7 @@ else
 fi
 log "Detected platform: $PLATFORM"
 
-# On cloud (HF/Render), disable Telegram IP-fallback transport that bypasses base_url.
-# Hermes auto-discovers Telegram datacenter IPs and dials api.telegram.org directly,
-# which hangs where the host is blocked. Disabling leaves a plain client that respects base_url.
+# Cloud blocks api.telegram.org; disable IP-fallback so the client honors base_url.
 if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
 	export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true
 	log "Telegram IP-fallback disabled (base_url-only routing on $PLATFORM)"
@@ -100,8 +97,7 @@ if [ -n "${GATEWAY_TOKEN:-}" ]; then
 fi
 
 # ── Setup state dirs ──────────────────────────────────────────────────
-# workspace/ is created after the restore barrier below — restore may seed an
-# old-layout .hermes/workspace that has to be migrated up before we create it.
+# Created after the restore barrier — restore may seed an old-layout workspace to migrate first.
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,home,plugins,webui}
 
 # Idempotently seed gateway hooks from repo (overwrite to stay current).
@@ -110,11 +106,7 @@ if [ -d "$APP_DIR/hooks" ]; then
 	echo "Gateway hooks seeded to $HERMES_HOME/hooks/."
 fi
 
-# Rotate on-disk logs at boot. The router + WebUI + dashboard tee their
-# stdout into $HERMES_HOME/logs/*.log via `tee -a`, which means without
-# rotation those files grow forever and end up in the HF Dataset backup.
-# Strategy: if a log is >5MB, rename to .1 (overwriting any previous .1)
-# and start fresh. Cheap, deterministic, no cron needed.
+# Rotate logs >5MB to .1 at boot — tee -a appends forever and bloats the backup.
 if [ -d "$HERMES_HOME/logs" ]; then
 	for f in "$HERMES_HOME/logs"/*.log; do
 		[ -f "$f" ] || continue
@@ -131,17 +123,15 @@ fi
 mkdir -p "$HERMES_HOME/.local/bin"
 ln -sfn /opt/hermes/.venv/bin/hermes "$HERMES_HOME/.local/bin/hermes"
 
-# Re-home from the inherited passwd home ($HERMES_DATA_ROOT) to /home/<agent>
-# (a symlink to AGENT_HOME), so ~/.hermes resolves to HERMES_HOME and dotfiles
-# persist. Only re-home once the symlink exists, else keep the passwd home.
+# Re-home to /home/<agent> (symlink to AGENT_HOME) so ~/.hermes + dotfiles persist;
+# only once the symlink exists, else keep the passwd home.
 if mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null \
 	&& { [ -L "$WORKSPACE_LINK" ] || [ ! -e "$WORKSPACE_LINK" ]; } \
 	&& ln -sfn "$AGENT_HOME" "$WORKSPACE_LINK" 2>/dev/null; then
 	export HOME="$WORKSPACE_LINK"
 	log "Home: $HOME -> $AGENT_HOME"
-	# Login shells read the passwd home, not this env — shim it there so they
-	# self-correct. Derives the agent from $AGENT_NAME at eval time (not baked)
-	# so it's race-safe when agents share the volume.
+	# Login shells read the passwd home, not this env — shim them there to
+	# self-correct; resolve $AGENT_NAME at eval time so it's race-safe across agents.
 	if [ "$HERMES_DATA_ROOT" != "$AGENT_HOME" ]; then
 		printf '%s\n' \
 			'# hermes: re-home login shells to the per-agent friendly home' \
@@ -168,12 +158,9 @@ if [ ! -L "${HOME}/.hermes/plugins" ] && ! [ "${HOME}/.hermes" -ef "$HERMES_HOME
 fi
 
 # ── Restore state from HF Storage Bucket (async, gated) ───────────────
-# Restore runs in the background so the independent Cloudflare setup below
-# overlaps its download. A hard wait barrier (HERMES_RESTORE_PID, joined just
-# after the Cloudflare blocks) blocks every step that reads restored state —
-# the Telegram home seed, key sync, hermes update — and the gateway launches
-# ~1000 lines later, so the gateway is never even spawned, let alone serving,
-# on un-restored memory. Restore stays non-fatal (degrades to fresh state).
+# Async so the Cloudflare setup below overlaps the download; a wait barrier
+# (HERMES_RESTORE_PID, joined after Cloudflare) gates every reader of restored
+# state. Non-fatal — degrades to fresh state.
 HERMES_RESTORE_PID=""
 if [ -n "${HF_TOKEN:-}" ]; then
 	echo "Restoring Hermes state from HF bucket ${BACKUP_BUCKET}/${AGENT_NAME}"
@@ -200,18 +187,14 @@ if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
 	python3 "$APP_DIR/cloudflare-keepalive-setup.py" || true
 fi
 
-# Gate: join the async HF restore before anything reads restored state. Every
-# step below (Telegram home seed, key sync, hermes update, gateway launch)
-# depends on the restored $HERMES_HOME, so block here until it completes.
-# Non-fatal, matching the original synchronous behavior.
+# Join the async restore before anything reads $HERMES_HOME. Non-fatal.
 if [ -n "$HERMES_RESTORE_PID" ]; then
 	wait "$HERMES_RESTORE_PID" || true
 	echo "HF restore complete."
 fi
 
-# Post-restore: an old-layout restore seeds .hermes/workspace, so migrate it up
-# only now (target-absent guard avoids clobber). Create the fresh dir only once
-# nothing is pending, so a failed mv retries next boot instead of being masked.
+# Old-layout restore seeds .hermes/workspace — migrate up now (target-absent guard
+# avoids clobber); create fresh only when nothing's pending so a failed mv retries.
 if [ -d "$HERMES_HOME/workspace" ] && [ ! -e "$WORKSPACE_HOME" ]; then
 	mv "$HERMES_HOME/workspace" "$WORKSPACE_HOME" \
 		&& log "Migrated workspace -> $WORKSPACE_HOME" \
@@ -220,18 +203,15 @@ fi
 [ -d "$HERMES_HOME/workspace" ] || mkdir -p "$WORKSPACE_HOME"
 
 # ── Memory-OS: seed consolidation skill + cron job (additive, idempotent) ──
-# Tiered self-managing memory (SPEC-B Phase 1). Working tier = state.db +
-# capped MEMORY.md/USER.md (prompt-injected); long-term tier = memories/longterm/*
-# (durable, uncapped). A scheduled agent distills sessions into durable memory and
-# keeps the capped files current. Mirrors the hooks-seed pattern (line ~99); runs
-# post-restore so it never clobbers restored memory or user-created cron jobs.
+# Tiered memory: working = state.db + capped MEMORY.md/USER.md; long-term =
+# memories/longterm/* (durable). A cron agent distills sessions into durable memory.
+# Post-restore so it never clobbers restored memory or user cron jobs.
 if [ -d "$APP_DIR/skills" ]; then
 	cp -a "$APP_DIR/skills/." "$HERMES_HOME/skills/"
 	echo "Assistant skills seeded to $HERMES_HOME/skills/."
 fi
 mkdir -p "$HERMES_HOME/memories/longterm" "$HERMES_HOME/memories/.backups"
-# One-time safety snapshot of any pre-existing memory before the consolidator
-# ever runs (belt-and-suspenders; the skill also backs up per run).
+# One-time snapshot of pre-existing memory before the consolidator first runs.
 if [ ! -f "$HERMES_HOME/memories/.backups/initial-seed.done" ]; then
 	for mf in MEMORY.md USER.md; do
 		[ -f "$HERMES_HOME/memories/$mf" ] && cp -a "$HERMES_HOME/memories/$mf" "$HERMES_HOME/memories/.backups/$mf.initial" || true
@@ -258,15 +238,10 @@ if [ -x "$HERMES_BIN" ]; then
 fi
 
 # ── Taste capture: seed preferences hook + skill + cron job (additive) ──
-# SPEC-B Phase 2. The taste-capture hook (session:end) queues correction/redo/
-# rejection signals into memories/longterm/TASTE-signals.md; the taste-capture
-# skill (cron) distills them into a confidence-gated preferences profile
-# (memories/longterm/TASTE-ledger.md, durable) and refreshes a marked block in
-# USER.md so the agent shapes output to Ritesh's taste. Hook + skill are seeded
-# by the blocks above (cp -a hooks/. and skills/.); here we init files + cron.
-# Cadence 730m (~12h) is deliberately offset from memory-os's 360m: both cron
-# agents do full-file writes to USER.md with no lock, so a coincident-minute run
-# could clobber. Different first-fire offsets keep them apart (lcm ≈ 18 days).
+# Taste capture: a session:end hook queues correction signals; this cron distills
+# them into a confidence-gated profile and a marked USER.md block. Files + cron
+# init here (hook/skill seeded above). Cadence 730m offset from memory-os's 360m
+# because both do lockless full-file writes to USER.md — coincident runs clobber.
 for tf in TASTE-ledger.md TASTE-signals.md; do
 	[ -f "$HERMES_HOME/memories/longterm/$tf" ] || : >"$HERMES_HOME/memories/longterm/$tf"
 done
@@ -293,15 +268,9 @@ elif [ -n "${TELEGRAM_USER_ID:-}" ] && [ -z "${TELEGRAM_ALLOWED_USERS:-}" ]; the
 fi
 
 # ── Telegram home channel auto-seed ───────────────────────────────────
-# Hermes prompts "/sethome" on the first message whenever a platform's home
-# channel is unset — its gateway reads os.getenv("TELEGRAM_HOME_CHANNEL") and,
-# when empty, tells the user to run /sethome. /sethome itself only persists
-# TELEGRAM_HOME_CHANNEL=<chat_id> into $HERMES_HOME/.env, which Hermes loads
-# with override=True on every start. A fresh container has no such value, so
-# the prompt returns each pull. Seed it once from the first allowed user (a
-# Telegram DM's chat_id equals the user id) so cron/cross-platform delivery
-# has a target with zero interaction. We only seed when the key is absent, so
-# a later /sethome (or Env-tab edit) rewrites the line and always wins.
+# Without TELEGRAM_HOME_CHANNEL the gateway nags "/sethome" each boot. Seed it
+# once from the first allowed user (DM chat_id == user id) so cron/cross-platform
+# delivery has a target; only when absent, so a later /sethome always wins.
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
 	HERMES_ENV_FILE="$HERMES_HOME/.env"
 	if [ -f "$HERMES_ENV_FILE" ] && grep -q '^TELEGRAM_HOME_CHANNEL=' "$HERMES_ENV_FILE"; then
@@ -324,9 +293,8 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
 	fi
 fi
 
-# Explicit polling mode wins over any inherited webhook URL (prior webhook deploy
-# or a restored .env), so the mode switch is deterministic — Hermes long-polls
-# whenever TELEGRAM_WEBHOOK_URL is empty.
+# Explicit polling wins over an inherited webhook URL (prior deploy / restored .env)
+# — Hermes long-polls whenever TELEGRAM_WEBHOOK_URL is empty.
 if [ "${TELEGRAM_MODE:-}" = "polling" ] && [ -n "${TELEGRAM_WEBHOOK_URL:-}" ]; then
 	log "TELEGRAM_MODE=polling — ignoring TELEGRAM_WEBHOOK_URL"
 	unset TELEGRAM_WEBHOOK_URL
@@ -591,9 +559,8 @@ hermes() {
   return $rc
 }
 BASHRC
-# Pin capture target to the exact path the boot-replay reads; the interactive
-# shell may not inherit WORKSPACE_HOME, so bake the resolved value rather than
-# re-derive it (a wrong base path silently breaks capture/replay).
+# Bake the resolved path; the interactive shell may not inherit WORKSPACE_HOME and
+# a wrong base silently breaks capture/replay.
 printf 'STARTUP_FILE=%q\n' "$STARTUP_FILE" >> "$HOME/.bashrc"
 cat > "$HOME/.profile" << 'PROFILE'
 [ -n "${BASH_VERSION:-}" ] && [ -f ~/.bashrc ] && . ~/.bashrc
@@ -601,12 +568,9 @@ PROFILE
 echo "Shell capture wrappers ready."
 
 # ── zsh interactive config (oh-my-zsh + powerlevel10k + private dotfiles) ──────
-# zsh is the hermes login shell (Dockerfile usermod), so tmate + the in-app
-# terminal open it. OMZ + the p10k theme + plugins are image-baked, but the
-# operator's personal dotfiles stay OUT of the image/git: they ride the HF bucket
-# under $HERMES_HOME (restored above) and load each boot — $HERMES_HOME/p10k.zsh ->
-# ~/.p10k.zsh, $HERMES_HOME/zshrc sourced by the generated ~/.zshrc. The capture
-# wrappers (hermes infra, twin of the bash set above) stay below.
+# zsh is the login shell (tmate + in-app terminal). OMZ/p10k/plugins are image-baked;
+# personal dotfiles ride the HF bucket under $HERMES_HOME and load each boot
+# (p10k.zsh -> ~/.p10k.zsh, zshrc sourced by the generated ~/.zshrc).
 if [ -f "$HERMES_HOME/p10k.zsh" ]; then
 	cp -f "$HERMES_HOME/p10k.zsh" "$HOME/.p10k.zsh"
 fi
@@ -719,12 +683,9 @@ printf 'STARTUP_FILE=%q\n' "$STARTUP_FILE" >> "$HOME/.zshrc"
 echo "zsh interactive config ready ($HOME/.zshrc)."
 
 # ── Pool key promotion ──
-# Mirror first key from a pool var into the singular env var. Accepts both the
-# comma-separated form (key1,key2) and the JSON-array form (["key1","key2"]) —
-# the same two shapes the Python parse_pool() below accepts — so a pool supplied
-# as JSON does not leak a leading `[`/quote into the promoted singular key.
-# Hermes providers read singular vars; this lets users supply pool keys and have
-# them picked up automatically. Gemini excluded — WU's JSON-array round-robin is richer.
+# Mirror the first pool key into the singular env var Hermes providers read.
+# Accepts comma-separated or JSON-array form (like parse_pool below). Gemini
+# excluded — its JSON-array round-robin is richer.
 promote_first_pool_key() {
 	local singular_var="$1"
 	local pool_var="$2"
@@ -764,10 +725,8 @@ promote_first_pool_key "OLLAMA_API_KEY"       "OLLAMA_API_KEYS"
 promote_first_pool_key "CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKENS"
 
 # ── Coding-agent CLIs (claude-code + opencode) headless setup ───────────────
-# Seed config so unattended tasks invoke claude/opencode non-interactively (no
-# onboarding/permission prompts). Auth via promoted singular keys. Defaults are
-# merged not clobbered, so operator edits survive. opencode model override:
-# CODING_AGENT_OPENCODE_MODEL.
+# Seed config so unattended tasks run claude/opencode non-interactively. Defaults
+# merged not clobbered (operator edits survive). Model override: CODING_AGENT_OPENCODE_MODEL.
 setup_coding_agents() {
 	local oc_model="${CODING_AGENT_OPENCODE_MODEL:-opencode/mimo-v2.5-free}"
 	CODING_HOME="$HOME" OC_MODEL="$oc_model" python3 - <<'PY' || echo "coding-agent setup: skipped (python error)"
@@ -1126,7 +1085,6 @@ bind % split-window -h -c "#{pane_current_path}"
 TMUXCONF
 fi
 hermes config set compression.enabled true 2>/dev/null || true
-# Redact secrets from agent output/logs by default — safe default for a hosted agent.
 hermes config set security.redact_secrets true 2>/dev/null || true
 hermes config set display.background_process_notifications "${HERMES_BACKGROUND_NOTIFICATIONS:-result}" 2>/dev/null || true
 
@@ -1188,16 +1146,10 @@ if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
 		fi
 	fi
 
-	# Cloudflare workers.dev routes propagate non-monotonically: the readiness
-	# probe can confirm the worker live, yet the gateway's first getMe still
-	# hits the "nothing here yet" placeholder on a lagging edge. python-telegram-bot
-	# parses that HTML and raises InvalidToken — an error class the gateway's
-	# connect-retry loop does NOT catch (it only retries NetworkError/TimedOut/
-	# OSError), so Telegram dies permanently on a transient. Widen that retry to
-	# also cover InvalidToken so it rides out the residual propagation flap.
-	# Patches the editable source the gateway actually imports (/opt/hermes/...),
-	# which the site-packages find above never reaches. Idempotent: re-running
-	# finds the already-widened line and no-ops.
+	# A lagging Cloudflare edge serves the placeholder page on first getMe; PTB
+	# parses it as InvalidToken, which the connect-retry loop doesn't catch — so
+	# Telegram dies on a transient. Widen the retry to cover InvalidToken. Patches
+	# the editable source the gateway imports; idempotent.
 	TG_FILE=$(python3 -c "import gateway.platforms.telegram as t; print(t.__file__)" 2>/dev/null || true)
 	if [ -n "$TG_FILE" ] && [ -f "$TG_FILE" ]; then
 		sed -i \
@@ -1208,23 +1160,16 @@ if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
 			warn "Failed to harden Telegram connect-retry (continuing)"
 	fi
 
-	# The gateway wraps adapter.connect() in an outer asyncio timeout (default
-	# ~30s). The InvalidToken-widened retry loop above backs off 1+2+4+8+15+15+15s
-	# across its 8 attempts (~60s) before the route reliably propagates — so the
-	# 30s wrapper kills it mid-retry (~attempt 5) and Telegram fails permanently
-	# on a transient. Give the loop room to finish. Honor an operator override.
+	# The retry loop above needs ~60s to ride out propagation, but the gateway's
+	# default ~30s connect timeout kills it mid-retry. Widen it; honor an override.
 	export HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT="${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
 	log "✓ Telegram connect timeout -> ${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT}s"
 fi
 
 # ── Polling mode: clear any stale webhook so getUpdates can take over ──────────
-# Hermes long-polls (getUpdates) whenever TELEGRAM_WEBHOOK_URL is empty. But if a
-# webhook was ever registered, Telegram answers getUpdates with 409 Conflict until
-# it is removed — so a webhook→polling switch silently fails without this call. It
-# is idempotent (Telegram returns ok when no webhook exists), so it self-heals on
-# every polling boot. Pending updates are kept (drop_pending_updates defaults to
-# false) so no messages are lost across the switch. Routed through TELEGRAM_BASE_URL
-# when set, because on HF/Render outbound api.telegram.org is blocked.
+# A stale registered webhook makes getUpdates return 409 until removed, so a
+# webhook→polling switch silently fails without this. Idempotent; keeps pending
+# updates. Routed via TELEGRAM_BASE_URL since HF/Render block api.telegram.org.
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
 	if [ -z "${TELEGRAM_BASE_URL:-}" ] && { [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; }; then
 		warn "Polling on $PLATFORM without a Telegram proxy (set CLOUDFLARE_PROXY_URL or TELEGRAM_BASE_URL) — outbound api.telegram.org is blocked; getUpdates will hang"
@@ -1407,10 +1352,8 @@ PY
 fi
 
 # ── Optional boot-time package installs (HF Variables/Secrets) ────────────────
-# Declarative installs so terminal/declared deps survive container restarts
-# without a custom Dockerfile. Best-effort: each failure is logged and counted,
-# never fatal. apt needs root/sudo (absent under USER hermes) so it degrades to
-# a logged skip; pip into the agent venv and HERMES_RUN work as hermes.
+# Declarative installs so deps survive restarts without a custom Dockerfile.
+# Best-effort, never fatal. apt degrades to a logged skip (no root under USER hermes).
 HM_STARTUP_FAILURES=0
 
 if [ -n "${HERMES_APT_PACKAGES:-}" ]; then
@@ -1459,8 +1402,6 @@ if [ -n "${HERMES_NPM_PACKAGES:-}" ]; then
 fi
 
 # Arbitrary startup script (HERMES_RUN): plain bash, or base64:/b64: prefixed.
-#   HERMES_RUN="pip install pandas && echo ready"
-#   HERMES_RUN="base64:$(base64 -w0 setup.sh)"
 hm_run_startup() {
 	local payload="$1"
 	[ -n "$payload" ] || return 0
@@ -1511,10 +1452,8 @@ fi
 # Private; no readiness gate.
 start_dashboard
 
-# Launch gateway and WebUI concurrently — independent processes, so overlapping
-# their startup drops WebUI's serial wait off the critical path. Gateway is still
-# waited on first (fatal); WebUI is waited on after (non-fatal), by which point it
-# has had the gateway's startup window to come up.
+# Launch concurrently; gateway waited first (fatal), WebUI after (non-fatal) by
+# which point it had the gateway's window to come up.
 start_gateway
 start_webui
 

@@ -1,11 +1,6 @@
-# Merged deployment: Hermes router + Hermes WebUI on HF Spaces.
-# Base: NousResearch Hermes Agent (Hermes CLI, gateway, dashboard, venv).
 
 ARG HERMES_AGENT_VERSION=latest
-# Pin the base by digest (the image `latest` resolved to on 2026-06-06) so builds
-# are reproducible and the layer cache only busts on a deliberate base bump.
-# HERMES_AGENT_VERSION stays the human-readable label (ENV below); override
-# HERMES_AGENT_REF to build against a different tag or digest.
+# Pin by digest for reproducible builds; layer cache busts only on deliberate base bump.
 ARG HERMES_AGENT_REF=nousresearch/hermes-agent@sha256:e51ed1bbd9a6f6c260a61f8401b6f7ffc9356cfed20b88f387521f9739eff166
 FROM ${HERMES_AGENT_REF}
 
@@ -13,7 +8,6 @@ ARG WEBUI_REF=v0.51.369
 
 USER root
 
-# System deps + WebUI checkout + router.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -52,9 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         "huggingface_hub>=1.18.0" hf_transfer pyyaml
 
-# GitHub CLI (`gh`) — not in the base apt repos, so add the official GitHub CLI
-# apt source + keyring first, then install. Own RUN so the third-party source and
-# its apt lists stay isolated from the main system-deps layer above.
+# Separate RUN keeps third-party apt source + lists isolated from main system-deps layer.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -64,11 +56,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# opencode on PATH for in-container use (npm global).
 RUN npm install -g opencode-ai \
  && npm cache clean --force
 
-# Claude Code via the official native installer, under a fixed image path.
 RUN export HOME=/opt/claude-home \
  && mkdir -p "$HOME" \
  && curl -fsSL https://claude.ai/install.sh | bash \
@@ -77,18 +67,12 @@ RUN export HOME=/opt/claude-home \
  && chmod -R a+rX /opt/claude-home/.local \
  && claude --version
 
-# code-review-graph CLI/MCP server, baked into the image via uv tool.
 ENV UV_TOOL_DIR=/opt/uv-tools \
     UV_TOOL_BIN_DIR=/usr/local/bin
 RUN uv tool install code-review-graph \
  && code-review-graph --help >/dev/null
 
-# zsh as the interactive shell: oh-my-zsh + powerlevel10k + the custom plugins
-# the seeded ~/.zshrc references (start.sh writes that .zshrc each boot). OMZ
-# lives in image-immutable /opt/oh-my-zsh (ZSH=) so it's independent of $HOME and
-# the runtime .zshrc disables its self-update. `bat` installs as `batcat` on
-# Debian — symlink it to `bat` for the MANPAGER + `cat` alias. chsh -> zsh so
-# tmate (and the in-app terminal) open zsh for the hermes user.
+# OMZ in /opt for image-immutable location; bat→batcat symlink; chsh for tmate/terminal.
 RUN export ZSH=/opt/oh-my-zsh \
  && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended --keep-zshrc \
  && git clone --depth 1 https://github.com/romkatv/powerlevel10k.git        "$ZSH/custom/themes/powerlevel10k" \
@@ -101,7 +85,7 @@ RUN export ZSH=/opt/oh-my-zsh \
  && grep -qxF /usr/bin/zsh /etc/shells 2>/dev/null || echo /usr/bin/zsh >> /etc/shells \
  && usermod -s /usr/bin/zsh hermes
 
-# Clone WebUI; install deps using system pip (base image venv may not exist yet)
+# system pip needed — base image venv may not exist yet.
 RUN git clone --depth 1 --branch ${WEBUI_REF} \
         https://github.com/nesquena/hermes-webui.git /opt/hermes-webui \
  && ( [ -f /opt/hermes-webui/requirements.txt ] \
@@ -109,7 +93,6 @@ RUN git clone --depth 1 --branch ${WEBUI_REF} \
       || true ) \
  && chown -R hermes:hermes /opt/hermes-webui
 
-# Integration scripts (vendored from HuggingMes).
 COPY --chown=hermes:hermes start.sh                       /opt/hermes/start.sh
 COPY --chown=hermes:hermes health-server.js               /opt/hermes/health-server.js
 COPY --chown=hermes:hermes hermes-sync.py                 /opt/hermes/hermes-sync.py
@@ -127,16 +110,11 @@ RUN chmod +x \
     /opt/hermes/cloudflare-proxy-setup.py \
     /opt/hermes/cloudflare-keepalive-setup.py
 
-# Expose the tmate session manager under three subcommand names on PATH.
 RUN ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-new \
  && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-ls \
  && ln -sf /opt/hermes/tmate-tools.sh /usr/local/bin/tmate-kill
 
-# Idempotent kanban migration patch (from HuggingMes).
-# Wraps ALTER TABLE ADD COLUMN in try/except so a persisted DB with the
-# column already present doesn't crash the gateway. Entire block wrapped
-# in try/except — skips silently if Hermes fixes this upstream or the
-# file structure changes.
+# Idempotent: ALTER TABLE ADD COLUMN wrapped in try/except to tolerate existing column or upstream fix.
 RUN python3 - <<'PY'
 import sys
 try:
@@ -179,8 +157,7 @@ except Exception as e:
     print(f"kanban patch: error ({e}), skipping", file=sys.stderr)
 PY
 
-# Silence high-frequency poll paths in logs (drowns HF Logs tab otherwise).
-# Only drops 2xx — errors and streaming still log.
+# Suppress 2xx poll paths to keep HF Logs tab readable; errors/streaming still log.
 RUN python3 - <<'PY'
 # Re-applies on every image build against the pinned WEBUI_REF. Marker-based:
 # anchors only on log_request's signature (stable across releases) and injects a
@@ -236,10 +213,8 @@ PY
 # hermes user needs write access for auto-updates.
 RUN chown -R hermes:hermes /opt/hermes/.venv
 
-# hermes aliases its workspace under /home at startup
 RUN chown hermes:hermes /home
 
-# Keep hermes CLI on PATH for all shell types.
 RUN echo 'export PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:$PATH"' \
     > /etc/profile.d/hermes-venv.sh
 
