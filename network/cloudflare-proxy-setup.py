@@ -16,8 +16,6 @@ from pathlib import Path
 API_BASE = "https://api.cloudflare.com/client/v4"
 ENV_FILE = Path("/tmp/hermes-cloudflare-proxy.env")
 DEFAULT_ALLOWED = [
-    # Messaging & social — primary use-case for Cloudflare proxy on HF Spaces
-    # (geo-restrictions on Telegram, Discord, WhatsApp, etc.)
     "api.telegram.org",
     "discord.com",
     "discordapp.com",
@@ -26,35 +24,31 @@ DEFAULT_ALLOWED = [
     "slack.com",
     "api.slack.com",
     "web.whatsapp.com",
-    # Social — confirmed/likely blocked by HF firewall
     "graph.facebook.com",
     "graph.instagram.com",
     "api.twitter.com",
     "api.x.com",
-    # Google
     "googleapis.com",
     "google.com",
     "googleusercontent.com",
     "gstatic.com",
-    # Email HTTP APIs (SMTP ports are blocked)
     "api.resend.com",
     "api.sendgrid.com",
-    # NOTE: AI-provider domains (api.openai.com, api.anthropic.com, etc.) are
-    # intentionally NOT included here. Proxying AI calls routes API keys through
-    # the Cloudflare Worker without explicit opt-in. Users who need AI API calls
-    # proxied can add specific domains via CLOUDFLARE_PROXY_DOMAINS env var.
 ]
 
 
 def cf_request(method: str, path: str, token: str, body: bytes | None = None, content_type: str = "application/json"):
-    req = urllib.request.Request(
-        f"{API_BASE}{path}",
-        data=body,
-        method=method,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
-    )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+            errors = error_body.get("errors") or [{"message": "Unknown error"}]
+            error_msg = errors[0].get("message", "Unknown error") if errors else "Unknown error"
+        except Exception:
+            error_msg = f"HTTP {e.code}: {e.reason}"
+        raise RuntimeError(f"Cloudflare API {e.code}: {error_msg}")
     if not payload.get("success"):
         errors = payload.get("errors") or [{"message": "Unknown Cloudflare API error"}]
         raise RuntimeError(errors[0].get("message", "Unknown Cloudflare API error"))
@@ -167,8 +161,7 @@ def resolve_account_and_subdomain(api_token: str) -> tuple[str, str]:
 
 
 def _is_telegram_response(body: str) -> bool:
-    """Telegram (proxied) answers JSON like {"ok":false,...} even for bad tokens.
-    A JSON body means the /bot route reaches api.telegram.org through the worker."""
+    """Telegram's JSON response confirms the /bot route proxies through to api.telegram.org."""
     return body.lstrip().startswith("{") and '"ok"' in body
 
 
@@ -177,24 +170,13 @@ def _bot_probe_url(proxy_url: str) -> str:
 
 
 def _probe_live(probe_url: str) -> bool:
-    """One probe of the worker's /bot route — the exact path Telegram uses.
-    True iff it proxies through to api.telegram.org (JSON response) rather than
-    serving Cloudflare's "nothing here yet" propagation placeholder.
-
-    Probing the root is not enough: the worker's root auth-gate (401) goes live
-    before the /bot route finishes propagating across edges, so a root probe
-    false-positives and the gateway's first getMe still hits the placeholder.
-    getMe with a dummy token returns a 401/404 JSON body — the readiness signal.
-
-    A browser User-Agent is mandatory: Cloudflare's bot firewall 403s the default
-    Python-urllib UA ("error code: 1010"), which never looks like Telegram JSON."""
+    """Probe /bot (not root — root auth-gate propagates first, causing false positives).
+    Requires browser UA: Cloudflare 403s the default Python-urllib agent."""
     probe = urllib.request.Request(probe_url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(probe, timeout=10) as resp:
             return _is_telegram_response(resp.read(2048).decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        # Telegram rejects the dummy token with a JSON 401/404 — still proves the
-        # route is live. The CF placeholder comes back as an HTML 404 instead.
         body = exc.read(2048).decode("utf-8", "replace") if exc.fp else ""
         return _is_telegram_response(body)
     except Exception:
@@ -202,19 +184,8 @@ def _probe_live(probe_url: str) -> bool:
 
 
 def wait_until_live(proxy_url: str, timeout: int = 300, interval: int = 3, required_streak: int = 4) -> bool:
-    """Block until the worker's /bot route is *consistently* live, then return
-    True; return False on timeout.
-
-    Requires `required_streak` consecutive live probes, not one: workers.dev
-    propagation is non-monotonic, so a fresh route can answer live for a single
-    request and then fall back to the placeholder seconds later. Returning on the
-    first success releases the gateway too early and it races the route back to a
-    placeholder → InvalidToken. A streak means the route is solidly propagated to
-    this container's edge (the same edge the gateway will use) before we proceed.
-
-    This call is the only thing gating gateway launch (start.sh runs us, then
-    starts the gateway), so the timeout is generous — correctness beats boot
-    speed, and an already-live worker confirms its streak in seconds."""
+    """Block until /bot route is consistently live; streak guards against
+    non-monotonic workers.dev propagation that would race the gateway."""
     probe_url = _bot_probe_url(proxy_url)
     deadline = time.monotonic() + timeout
     streak = 0
@@ -247,14 +218,6 @@ def main() -> int:
             worker_name = derive_worker_name()
             proxy_url = f"https://{worker_name}.{subdomain}.workers.dev"
 
-            # Reuse an already-deployed worker instead of redeploying: a
-            # PUT/subdomain redeploy resets workers.dev propagation and forces the
-            # gateway to race a cold route on every boot. A single live probe is
-            # enough to decide "don't redeploy" — it is NOT enough to release the
-            # gateway (the route can still flap back to the placeholder), so reuse
-            # skips only the deploy API calls and still falls through to the
-            # sustained-liveness gate below. Telegram /bot paths bypass the proxy
-            # secret in the worker, so reusing without the secret is fine.
             if _probe_live(_bot_probe_url(proxy_url)):
                 write_env(proxy_url, existing_secret)
                 print(f"Cloudflare worker exists, reusing (no redeploy): {proxy_url}")
@@ -280,10 +243,6 @@ def main() -> int:
                 )
                 write_env(proxy_url, proxy_secret)
 
-            # Single gate for both paths: block until the /bot route is
-            # CONSISTENTLY live (sustained streak). Releasing the gateway on a
-            # transient success lets its first Telegram call hit Cloudflare's
-            # placeholder 404 → InvalidToken.
             if wait_until_live(proxy_url):
                 print(f"Cloudflare worker live: {proxy_url}")
             else:

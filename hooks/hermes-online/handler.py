@@ -32,7 +32,6 @@ def _local_now(tz_name: str) -> datetime:
     except Exception as exc:
         log.warning("zoneinfo %r unavailable (%s); trying fixed offset", tz_name, exc)
 
-    # DST-free zones whose offset never changes — safe as a constant.
     fixed = {
         "asia/kolkata": (5, 30), "asia/calcutta": (5, 30),
         "ist": (5, 30), "utc": (0, 0), "gmt": (0, 0),
@@ -42,7 +41,6 @@ def _local_now(tz_name: str) -> datetime:
         h, m = fixed[key]
         return now_utc.astimezone(timezone(timedelta(hours=h, minutes=m)))
 
-    # Literal offset like "UTC+5:30", "+05:30", "+0530".
     s = key.replace("utc", "").replace("gmt", "").strip()
     if s and s[0] in "+-":
         sign = 1 if s[0] == "+" else -1
@@ -64,10 +62,6 @@ _HERMES_HOME = os.environ.get("HERMES_HOME", "/opt/data")
 _SESSIONS_FILE = os.path.join(_HERMES_HOME, "sessions", "sessions.json")
 _STATE_DB = os.path.join(_HERMES_HOME, "state.db")
 
-# Boot-scoped once-guard. /tmp is ephemeral container storage — wiped on a real
-# container boot, but survives in-place gateway service restarts inside the
-# supervisor loop. So the online greeting fires exactly once per container boot,
-# however many times gateway:startup is emitted (reconnects, restarts).
 _BOOT_SENTINEL = os.path.join(
     "/tmp", f"hermes-online.greeted.{os.environ.get('AGENT_NAME', 'primary')}"
 )
@@ -84,12 +78,9 @@ def _claim_boot_once() -> bool:
     except FileExistsError:
         return False
     except Exception as exc:
-        # If the sentinel can't be created, fail open (greet) rather than go silent.
         log.warning("boot once-guard unavailable (%s); proceeding", exc)
         return True
 
-# state.db schema is owned upstream and unversioned here; the timestamp column
-# name varies across versions, so resolve it from a whitelist at query time.
 _TS_COL_CANDIDATES = ("created_at", "timestamp", "ts", "time", "created")
 _CONTENT_COL_CANDIDATES = ("content", "text", "message", "body", "data")
 
@@ -108,7 +99,6 @@ def _recent_topic(limit: int = 4, max_len: int = 160) -> str:
             content_col = next((c for c in _CONTENT_COL_CANDIDATES if c in cols), None)
             if ts_col is None or content_col is None:
                 return ""
-            # cols are from fixed whitelists, never user input → safe to inline.
             role_filter = "WHERE role IN ('user', 'assistant') " if "role" in cols else ""
             rows = conn.execute(
                 f"SELECT {content_col} FROM messages {role_filter}"
@@ -182,7 +172,6 @@ def _message_count(session_id: str, since: datetime) -> int:
             ts_col = next((c for c in _TS_COL_CANDIDATES if c in cols), None)
             if "session_id" not in cols or ts_col is None:
                 return 0
-            # ts_col is from a fixed whitelist, never user input → safe to inline.
             row = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE session_id = ? AND {ts_col} >= ?",
                 (session_id, since.isoformat()),
@@ -301,7 +290,6 @@ async def handle(event_type: str, context: dict) -> None:
             log.info("No TELEGRAM_HOME_CHANNEL set; skipping online greeting")
             return
 
-        # Telegram is connected (in platforms) and configured — greet once per boot.
         if not _claim_boot_once():
             log.info("Online greeting already sent this boot; skipping")
             return
@@ -310,12 +298,10 @@ async def handle(event_type: str, context: dict) -> None:
         tz_name = os.environ.get("TELEGRAM_BOOT_TZ") or os.environ.get("TZ") or "Asia/Kolkata"
         local = _local_now(tz_name)
 
-        # Step A — deterministic liveness ping (no LLM dependency).
         greeting = "Good morning" if local.hour < 12 else ("Good afternoon" if local.hour < 18 else "Good evening")
         alive_msg = f"✅ {agent_name} online — {greeting} {local.strftime('%Y-%m-%d %H:%M')}"
         _send_telegram(alive_msg, home_chat_id)
 
-        # Step B — context-aware LLM greeting on background thread.
         thread = threading.Thread(
             target=_send_llm_greeting,
             args=(home_chat_id, agent_name),

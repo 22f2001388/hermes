@@ -1,4 +1,3 @@
-# Local/non-Space runs of the merged Hermes WebUI build.
 # Values interpolate from a sibling .env (see .env.example). Only port 7861 is exposed; others are internal.
 services:
   hermes-webui:
@@ -11,13 +10,11 @@ services:
     ports:
       - "7861:7861"
     environment:
-      # Core
       AGENT_NAME: ${AGENT_NAME:-primary}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-}
       LLM_MODEL: ${LLM_MODEL:-google/gemini-flash-lite-latest}
       LLM_API_KEY: ${LLM_API_KEY:-}
       SPACE: ${SPACE:-http://localhost:7861}
-      # WebUI
       PRIMARY_UI: ${PRIMARY_UI:-webui}
       HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-}
       # Backup (shared bucket; each agent under its AGENT_NAME prefix)
@@ -26,11 +23,9 @@ services:
       BACKUP_DATASET_NAME: ${BACKUP_DATASET_NAME:-}
       MIGRATE_FROM_DATASET: ${MIGRATE_FROM_DATASET:-}
       SYNC_INCLUDE_ENV: ${SYNC_INCLUDE_ENV:-}
-      # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
       TELEGRAM_MODE: ${TELEGRAM_MODE:-}
-      # Cloudflare
       CLOUDFLARE_WORKERS_TOKEN: ${CLOUDFLARE_WORKERS_TOKEN:-}
       CLOUDFLARE_PROXY_URL: ${CLOUDFLARE_PROXY_URL:-}
       CLOUDFLARE_PROXY_SECRET: ${CLOUDFLARE_PROXY_SECRET:-}

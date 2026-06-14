@@ -23,7 +23,7 @@ from pathlib import Path
 from huggingface_hub.errors import RepositoryNotFoundError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SYNC_PATH = REPO_ROOT / "hermes-sync.py"
+SYNC_PATH = REPO_ROOT / "sync" / "hermes-sync.py"
 
 _FAILURES: list[str] = []
 _LOAD_COUNTER = 0
@@ -65,7 +65,6 @@ class FakeRemote:
         self.upload_count = 0
         self.download_count = 0
 
-    # --- bucket API surface (matches HfApi method signatures) ---
     def create_bucket(self, bucket_id, *, private=None, exist_ok=False, **kw):
         path = self.remote_root / bucket_id
         if path.exists() and not exist_ok:
@@ -74,14 +73,12 @@ class FakeRemote:
 
     def sync_bucket(self, source=None, dest=None, *, delete=False, **kw):
         if source.startswith("hf://buckets/"):
-            # download: remote prefix -> local dest
             bucket_id, prefix = _parse_uri(source)
             remote_path = self.remote_root / bucket_id / prefix
             self.download_count += 1
             if remote_path.exists():
                 _copytree_merge(remote_path, Path(dest))
         else:
-            # upload: local source -> remote prefix
             bucket_id, prefix = _parse_uri(dest)
             remote_path = self.remote_root / bucket_id / prefix
             self.upload_count += 1
@@ -97,7 +94,6 @@ class FakeRemote:
             if path.is_file():
                 yield path
 
-    # --- dataset migration source ---
     def snapshot_download(self, repo_id=None, repo_type=None, token=None, local_dir=None, **kw):
         src = self.dataset_root / repo_id
         if not src.exists():
@@ -120,7 +116,6 @@ def load_sync_module(remote: FakeRemote, **env) -> object:
     spec = importlib.util.spec_from_file_location(f"hermes_sync_{_LOAD_COUNTER}", SYNC_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # Swap the real HF surface for the shared fake remote.
     mod.HF_API = remote
     mod.snapshot_download = remote.snapshot_download
     return mod
@@ -132,7 +127,6 @@ def seed_home(home: Path, marker_text: str) -> None:
     (home / "memory").mkdir(parents=True, exist_ok=True)
     (home / "sessions" / "chat.json").write_text(f'{{"agent":"{marker_text}"}}', encoding="utf-8")
     (home / "memory" / "notes.txt").write_text(f"notes for {marker_text}", encoding="utf-8")
-    # excludes
     (home / ".git").mkdir(exist_ok=True)
     (home / ".git" / "config").write_text("[core]\n", encoding="utf-8")
     (home / "__pycache__").mkdir(exist_ok=True)
@@ -141,7 +135,7 @@ def seed_home(home: Path, marker_text: str) -> None:
     (home / ".env").write_text("SECRET=topsecret\n", encoding="utf-8")
     big = home / "big.bin"
     with big.open("wb") as fh:
-        fh.truncate(51 * 1024 * 1024)  # > 50MB cap
+        fh.truncate(51 * 1024 * 1024)
 
 
 def rel_file_set(root: Path) -> set[str]:
@@ -166,7 +160,6 @@ def main() -> int:
     bucket_id = "testns/hermes-backup"
     rroot = remote.remote_root
 
-    # ---- (a) + (c): two agents sync to own prefix; excludes filtered ----
     print("Test (a)/(c): per-agent prefixes + exclude filtering")
     alpha_home = work / "alpha" / ".hermes"
     beta_home = work / "beta" / ".hermes"
@@ -196,13 +189,11 @@ def main() -> int:
     check("exclude .env not uploaded", ".env" not in alpha_uploaded)
     check("exclude >50MB not uploaded", "big.bin" not in alpha_uploaded)
 
-    # ---- (b): restore round-trips byte-identical ----
     print("Test (b): restore round-trip byte-identical")
     alpha_restored = work / "alpha_restored" / ".hermes"
     m_restore = load_sync_module(remote, AGENT_NAME="alpha", HERMES_HOME=str(alpha_restored),
                                  MIGRATE_FROM_DATASET="false")
     m_restore.restore()
-    # Canonical uploaded set = what create_snapshot_dir would produce from the source.
     staging = Path(m_alpha.create_snapshot_dir(alpha_home))
     try:
         check("restored tree byte-identical to uploaded snapshot",
@@ -210,17 +201,14 @@ def main() -> int:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
-    # ---- (d): marker/fingerprint short-circuit skips no-op sync ----
+    fp, marker = m_alpha.sync_once()
     print("Test (d): no-op short-circuit")
-    fp, marker = m_alpha.sync_once()  # fresh marker/fp for unchanged alpha_home
     uploads_before = remote.upload_count
     fp2, marker2 = m_alpha.sync_once(fp, marker)
     check("no upload on unchanged tree", remote.upload_count == uploads_before)
     check("short-circuit returns same fingerprint", fp2 == fp)
 
-    # ---- (e): migration from legacy dataset on empty prefix ----
     print("Test (e): legacy dataset -> bucket migration")
-    # Seed a legacy dataset for namespace testns / hermes-backup.
     ds = remote.dataset_root / "testns/hermes-backup"
     (ds / "sessions").mkdir(parents=True, exist_ok=True)
     (ds / "sessions" / "old.json").write_text('{"legacy":true}', encoding="utf-8")

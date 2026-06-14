@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-BUCKET = f"hermes-livecheck-{uuid.uuid4().hex[:8]}"  # throwaway, deleted at the end
+BUCKET = f"hermes-livecheck-{uuid.uuid4().hex[:8]}"
 
 
 def _probe_token() -> str | None:
@@ -43,7 +43,7 @@ def _load_sync(home: Path, agent: str):
     os.environ["HERMES_HOME"] = str(home)
     os.environ["AGENT_NAME"] = agent
     os.environ["BACKUP_BUCKET_NAME"] = BUCKET
-    spec = importlib.util.spec_from_file_location(f"hsync_{agent}", REPO / "hermes-sync.py")
+    spec = importlib.util.spec_from_file_location(f"hsync_{agent}", REPO / "sync" / "hermes-sync.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -82,19 +82,16 @@ def main() -> int:
         alpha_home = root_path / "alpha"
         beta_home = root_path / "beta"
 
-        # 1. alpha pushes its state.
         alpha_files = {"sessions/a.json": "ALPHA-DATA", "memory/note.txt": "alpha note"}
         _seed(alpha_home, alpha_files)
         alpha = _load_sync(alpha_home, "alpha")
         alpha.sync_once()
 
-        # 2. beta pushes different state under its own prefix.
         beta_files = {"sessions/b.json": "BETA-DATA"}
         _seed(beta_home, beta_files)
         beta = _load_sync(beta_home, "beta")
         beta.sync_once()
 
-        # 3. alpha restores into a clean dir → must match exactly, no beta bleed.
         alpha_restore = root_path / "alpha_restored"
         alpha_restore.mkdir()
         alpha2 = _load_sync(alpha_restore, "alpha")
@@ -103,11 +100,9 @@ def main() -> int:
         if got != alpha_files:
             failures.append(f"alpha round-trip mismatch: expected {alpha_files}, got {got}")
 
-        # 4. isolation: alpha's restore must not contain beta's file.
         if "sessions/b.json" in got:
             failures.append("ISOLATION BREACH: beta data appeared in alpha restore")
 
-    # 5. cleanup — delete the throwaway bucket if the API supports it.
     try:
         if hasattr(api, "delete_bucket"):
             api.delete_bucket(f"{user}/{BUCKET}")

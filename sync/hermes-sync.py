@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Hermes state backup via HF Storage Buckets. Vendored from HuggingMes.
 
-Backs up the agent home ($HERMES_BACKUP_ROOT): the .hermes config dir (sessions,
-profiles, skills, cron, memory, plugins, webui state) plus the workspace, so the
-full agent home survives Space restarts.
-
-Each agent writes under its own prefix (AGENT_NAME) inside one shared private
-bucket, so many agents share a bucket without clobbering each other."""
+Backs up the agent home ($HERMES_BACKUP_ROOT): .hermes config + workspace, so the
+full agent home survives Space restarts. Each agent writes under its own prefix
+(AGENT_NAME) inside one shared private bucket."""
 
 import hashlib
 import json
@@ -24,7 +21,6 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
-# hf_transfer → HF_XET_HIGH_PERFORMANCE avoids FutureWarning on hub >=0.30
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 
 from huggingface_hub import HfApi, snapshot_download
@@ -33,26 +29,27 @@ from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
-# Snapshot the whole agent home (state in .hermes/ + work in workspace/), not just .hermes.
 BACKUP_ROOT = Path(os.environ.get("HERMES_BACKUP_ROOT", str(HERMES_HOME)))
 STATUS_FILE = Path("/tmp/hermes-sync-status.json")
 STATE_FILE = HERMES_HOME / ".hermes-sync-state.json"
 INTERVAL = int(os.environ.get("SYNC_INTERVAL", "60"))
 INITIAL_DELAY = int(os.environ.get("SYNC_START_DELAY", "5"))
-# Change-driven: poll metadata, wait DEBOUNCE quiet, cap at INTERVAL ceiling.
 POLL_INTERVAL = float(os.environ.get("SYNC_POLL_INTERVAL", "2"))
 DEBOUNCE_SECONDS = float(os.environ.get("SYNC_DEBOUNCE_SECONDS", "3"))
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 HF_USERNAME = os.environ.get("HF_USERNAME", "").strip()
 SPACE_AUTHOR_NAME = os.environ.get("SPACE_AUTHOR_NAME", "").strip()
-# Bucket holding every agent's backup; each agent lives under its own prefix.
 BACKUP_BUCKET_NAME = os.environ.get("BACKUP_BUCKET_NAME", "hermes-backup").strip()
-# Per-agent prefix inside the shared bucket. Lowercased so casing can't split a prefix.
 AGENT_NAME = (os.environ.get("AGENT_NAME", "").strip() or "primary").lower()
-# One-time legacy dataset → bucket migration when an agent's prefix is still empty.
 BACKUP_DATASET_NAME = os.environ.get("BACKUP_DATASET_NAME", "hermes-backup").strip()
-MIGRATE_FROM_DATASET = os.environ.get("MIGRATE_FROM_DATASET", "true").strip().lower() in {"1", "true", "yes"}
-INCLUDE_ENV = os.environ.get("SYNC_INCLUDE_ENV", "").strip().lower() in {"1", "true", "yes"}
+MIGRATE_FROM_DATASET = os.environ.get(
+    "MIGRATE_FROM_DATASET", "true"
+).strip().lower() in {"1", "true", "yes"}
+INCLUDE_ENV = os.environ.get("SYNC_INCLUDE_ENV", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 MAX_FILE_SIZE_BYTES = int(os.environ.get("SYNC_MAX_FILE_BYTES", str(50 * 1024 * 1024)))
 
 EXCLUDED_DIRS = {
@@ -63,13 +60,18 @@ EXCLUDED_DIRS = {
     "__pycache__",
     "node_modules",
     "venv",
-    "logs",          # log files are useless after a restart
+    "logs",
 }
 EXCLUDED_TOP_LEVEL = {"logs", STATE_FILE.name}
 EXCLUDED_SUFFIXES = (
-    ".log", ".log.1", ".log.2",
-    ".db-shm", ".db-wal", ".db-journal",
-    ".pid", ".tmp",
+    ".log",
+    ".log.1",
+    ".log.2",
+    ".db-shm",
+    ".db-wal",
+    ".db-journal",
+    ".pid",
+    ".tmp",
 )
 EXCLUDED_PATH_PREFIXES = (
     ".claude/plugins/cache",
@@ -84,8 +86,6 @@ HF_API = HfApi(token=HF_TOKEN) if HF_TOKEN else None
 STOP_EVENT = threading.Event()
 _NAMESPACE_CACHE: str | None = None
 
-# .env warning: dashboard writes keys here, wiped on restart. Not backed up
-# by default (secrets in a backup is the wrong tradeoff). Status page banner.
 ENV_FILE = HERMES_HOME / ".env"
 ON_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("SPACE_HOST"))
 
@@ -97,8 +97,6 @@ def _rel_to_backup(p: Path) -> str | None:
         return None
 
 
-# Nested-path excludes: the state marker, and .env unless opted in. Keyed off
-# BACKUP_ROOT so they match wherever .hermes sits under the snapshot root.
 EXCLUDED_RELPATHS = {r for r in (_rel_to_backup(STATE_FILE),) if r}
 if not INCLUDE_ENV:
     _env_rel = _rel_to_backup(ENV_FILE)
@@ -113,7 +111,6 @@ def env_warning_payload() -> dict | None:
     try:
         if not ENV_FILE.is_file():
             return None
-        # Count non-empty, non-comment lines as a proxy for "user-set keys".
         keys = 0
         for raw in ENV_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.strip()
@@ -138,7 +135,12 @@ def env_warning_payload() -> dict | None:
         return None
 
 
-def write_status(status: str, message: str, fingerprint: str | None = None, marker: tuple[int, int, int] | None = None) -> None:
+def write_status(
+    status: str,
+    message: str,
+    fingerprint: str | None = None,
+    marker: tuple[int, int, int] | None = None,
+) -> None:
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload: dict = {"status": status, "message": message, "timestamp": timestamp}
     warning = env_warning_payload()
@@ -182,7 +184,9 @@ def resolve_namespace() -> str:
 
     namespace = str(namespace).strip()
     if not namespace:
-        raise RuntimeError("Could not determine HF username. Set HF_USERNAME or use an account HF_TOKEN.")
+        raise RuntimeError(
+            "Could not determine HF username. Set HF_USERNAME or use an account HF_TOKEN."
+        )
 
     _NAMESPACE_CACHE = namespace
     return namespace
@@ -200,7 +204,6 @@ def remote_uri() -> str:
 
 def ensure_bucket_exists() -> str:
     bucket_id = resolve_backup_bucket()
-    # exist_ok makes this a create-only-if-missing no-op when the bucket is already there.
     HF_API.create_bucket(bucket_id, private=True, exist_ok=True)
     return bucket_id
 
@@ -227,7 +230,10 @@ def should_exclude(rel_posix: str, path: Path) -> bool:
         return False
     if rel_posix in EXCLUDED_RELPATHS:
         return True
-    if any(rel_posix == pre or rel_posix.startswith(pre + "/") for pre in EXCLUDED_PATH_PREFIXES):
+    if any(
+        rel_posix == pre or rel_posix.startswith(pre + "/")
+        for pre in EXCLUDED_PATH_PREFIXES
+    ):
         return True
     if parts[0] in EXCLUDED_TOP_LEVEL:
         return True
@@ -301,10 +307,7 @@ def create_snapshot_dir(source_root: Path) -> Path:
 
 
 def _push_snapshot(uri: str, delete: bool) -> None:
-    """Upload an exclude-filtered snapshot of BACKUP_ROOT to the agent prefix.
-
-    Routed through create_snapshot_dir so byte-identical exclude semantics
-    (including the 50MB cap) hold for both routine syncs and migration seeds."""
+    """Upload an exclude-filtered snapshot of BACKUP_ROOT to the agent prefix."""
     snapshot_dir = create_snapshot_dir(BACKUP_ROOT)
     try:
         HF_API.sync_bucket(str(snapshot_dir), uri, delete=delete, quiet=True)
@@ -331,15 +334,17 @@ def _merge_into_home(source_root: Path) -> None:
 
 def migrate_from_dataset(uri: str) -> bool:
     """One-time legacy dataset → bucket move.
-
-    Pulls the old private dataset, child-merges it into HERMES_HOME with the
-    same exclude logic as restore, then seeds the agent's bucket prefix.
-    Returns False (no migration) when the dataset is absent or empty."""
+    Returns False when the dataset is absent or empty."""
     dataset_repo = f"{resolve_namespace()}/{BACKUP_DATASET_NAME}"
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
-                snapshot_download(repo_id=dataset_repo, repo_type="dataset", token=HF_TOKEN, local_dir=tmpdir)
+                snapshot_download(
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                    token=HF_TOKEN,
+                    local_dir=tmpdir,
+                )
             except RepositoryNotFoundError:
                 return False
             except HfHubHTTPError as exc:
@@ -350,7 +355,6 @@ def migrate_from_dataset(uri: str) -> bool:
             if not any(tmp_path.iterdir()):
                 return False
             _merge_into_home(tmp_path)
-        # Seed the bucket prefix from the freshly-populated HERMES_HOME.
         _push_snapshot(uri, delete=False)
         return True
     except Exception as exc:
@@ -367,15 +371,9 @@ def restore() -> bool:
     write_status("restoring", f"Restoring Hermes state from {uri}")
     try:
         bucket_id = ensure_bucket_exists()
-        # New-layout backups carry a `.hermes/` prefix (keys relative to the agent
-        # home); old ones are keyed relative to .hermes itself. Restore each into
-        # the root it was keyed against — start.sh then migrates the old shape and
-        # the next delete-sync re-keys the bucket.
         new_layout = not bucket_prefix_empty(bucket_id, f"{AGENT_NAME}/.hermes")
         target = BACKUP_ROOT if new_layout else HERMES_HOME
         target.mkdir(parents=True, exist_ok=True)
-        # No delete: baked-in local files (config, plugins) must survive a restore
-        # of an empty/partial prefix.
         try:
             HF_API.sync_bucket(uri, str(target), quiet=True)
         except RepositoryNotFoundError:
@@ -388,8 +386,6 @@ def restore() -> bool:
             write_status("restored", f"Restored Hermes state from {uri}")
             print(f"Hermes sync: restored state from bucket {uri}")
             return True
-
-        # Empty prefix: try the one-time dataset migration, else start fresh.
         if MIGRATE_FROM_DATASET and migrate_from_dataset(uri):
             write_status("migrated", f"Migrated legacy dataset backup into {uri}")
             print(f"Hermes sync: MIGRATED legacy dataset -> bucket {uri}")
@@ -433,7 +429,9 @@ def migrate() -> bool:
         return False
 
 
-def sync_once(last_fingerprint: str | None = None, last_marker: tuple[int, int, int] | None = None):
+def sync_once(
+    last_fingerprint: str | None = None, last_marker: tuple[int, int, int] | None = None
+):
     if last_fingerprint is None and last_marker is None:
         if STATE_FILE.exists():
             try:
@@ -459,10 +457,14 @@ def sync_once(last_fingerprint: str | None = None, last_marker: tuple[int, int, 
 
     hostname = socket.gethostname()
     write_status("syncing", f"Uploading Hermes state to {uri} from {hostname}")
-    # delete=True so removals propagate to the agent prefix (excludes already filtered).
     _push_snapshot(uri, delete=True)
 
-    write_status("success", f"Uploaded Hermes state to {uri}", fingerprint=current_fingerprint, marker=current_marker)
+    write_status(
+        "success",
+        f"Uploaded Hermes state to {uri}",
+        fingerprint=current_fingerprint,
+        marker=current_marker,
+    )
     return (current_fingerprint, current_marker)
 
 
@@ -487,10 +489,8 @@ def loop() -> int:
 
     warning = env_warning_payload()
     if warning is not None:
-        # One-liner so it's greppable in HF logs.
         print(f"Hermes sync WARNING: {warning['message']}")
 
-    # Seed from prior run to avoid re-uploading identical tree.
     last_fingerprint: str | None = None
     last_marker: tuple[int, int, int] | None = None
     if STATE_FILE.exists():
@@ -512,13 +512,6 @@ def loop() -> int:
         f"debounce={DEBOUNCE_SECONDS}s max={INTERVAL}s -> {uri}"
     )
 
-    # Change-driven scheduler. Two clocks:
-    #   * `pending_since`     — when we first noticed an unsynced change. Used
-    #                           with INTERVAL to enforce a hard ceiling so a
-    #                           continuously-busy session can't starve uploads.
-    #   * `last_change_at`    — when we most recently saw the marker move. The
-    #                           debounce timer is measured against this so we
-    #                           wait for writes to settle before uploading.
     pending_since: float | None = None
     last_change_at: float | None = None
     candidate_marker = last_marker
@@ -530,14 +523,12 @@ def loop() -> int:
         try:
             current_marker = metadata_marker(BACKUP_ROOT)
         except Exception as exc:
-            # Don't let a transient stat error kill the loop.
             write_status("error", f"marker scan failed: {exc}")
             continue
 
         now = time.time()
 
         if current_marker != candidate_marker:
-            # Files moved since the last poll. Start (or extend) a debounce.
             if pending_since is None:
                 pending_since = now
             last_change_at = now
@@ -545,14 +536,10 @@ def loop() -> int:
             continue
 
         if pending_since is None:
-            # Tree is unchanged and there's nothing waiting. Nothing to do.
             continue
 
         quiet_for = now - (last_change_at or now)
         held_for = now - pending_since
-        # Trigger when writes have settled (debounce) OR when the hard ceiling
-        # is hit, so a never-idle tree still gets snapshotted at least once
-        # per INTERVAL seconds.
         if quiet_for < DEBOUNCE_SECONDS and held_for < INTERVAL:
             continue
 
@@ -562,7 +549,6 @@ def loop() -> int:
         except Exception as exc:
             write_status("error", f"Sync failed: {exc}")
             print(f"Hermes sync failed: {exc}")
-            # Back off briefly on failure so we don't hot-loop a broken upload.
             if STOP_EVENT.wait(min(5.0, POLL_INTERVAL * 2)):
                 break
         finally:

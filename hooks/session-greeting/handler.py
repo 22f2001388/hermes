@@ -63,9 +63,6 @@ _HERMES_HOME = os.environ.get("HERMES_HOME", "/opt/data")
 _SESSIONS_FILE = os.path.join(_HERMES_HOME, "sessions", "sessions.json")
 _STATE_DB = os.path.join(_HERMES_HOME, "state.db")
 _THROTTLE_DIR = os.path.join(_HERMES_HOME, "hooks", "session-greeting")
-# Durable per-session_key markers: greet a given session exactly once, even if
-# session:start re-fires for the same session. Survives restarts (lives under
-# HERMES_HOME, not /tmp). Pruned to bound growth.
 _GREETED_SESSIONS_DIR = os.path.join(_THROTTLE_DIR, "greeted-sessions")
 _GREETED_TTL_SECONDS = 7 * 24 * 3600
 
@@ -103,8 +100,6 @@ def _prune_greeted_sessions() -> None:
     except Exception:
         pass
 
-# state.db schema is owned upstream and unversioned here; the timestamp column
-# name varies across versions, so resolve it from a whitelist at query time.
 _TS_COL_CANDIDATES = ("created_at", "timestamp", "ts", "time", "created")
 _CONTENT_COL_CANDIDATES = ("content", "text", "message", "body", "data")
 
@@ -123,7 +118,6 @@ def _recent_topic(limit: int = 4, max_len: int = 160) -> str:
             content_col = next((c for c in _CONTENT_COL_CANDIDATES if c in cols), None)
             if ts_col is None or content_col is None:
                 return ""
-            # cols are from fixed whitelists, never user input → safe to inline.
             role_filter = "WHERE role IN ('user', 'assistant') " if "role" in cols else ""
             rows = conn.execute(
                 f"SELECT {content_col} FROM messages {role_filter}"
@@ -148,10 +142,6 @@ def _recent_topic(limit: int = 4, max_len: int = 160) -> str:
         f"- {s}" for s in snippets
     )
 
-# Re-entrancy guard: a greeting builds an AIAgent, whose own run could emit
-# another session:start. While a user's greeting is in flight we drop further
-# events for that user, so a self-triggered session can never loop. Doubles as
-# anti-spam for rapid concurrent sessions.
 _inflight_lock = threading.Lock()
 _inflight_users: set = set()
 
@@ -228,7 +218,6 @@ def _message_count(session_id: str, since: datetime) -> int:
             ts_col = next((c for c in _TS_COL_CANDIDATES if c in cols), None)
             if "session_id" not in cols or ts_col is None:
                 return 0
-            # ts_col is from a fixed whitelist, never user input → safe to inline.
             row = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE session_id = ? AND {ts_col} >= ?",
                 (session_id, since.isoformat()),
@@ -354,8 +343,6 @@ async def handle(event_type: str, context: dict) -> None:
             log.info("No chat_id for session %s; skipping greeting", session_key)
             return
 
-        # Greet each session exactly once: drop repeat session:start for the same
-        # session_key (the event can re-fire for one logical session).
         if not _claim_session_once(session_key):
             log.info("Session %s already greeted; skipping", session_key)
             return
@@ -365,33 +352,25 @@ async def handle(event_type: str, context: dict) -> None:
 
         is_first = _is_first_session_today(user_id, now)
 
-        # Policy: 'first-only' greets once per day; 'welcome-back' (default) also
-        # sends a brief note on same-day re-entries.
         mode = os.environ.get("HERMES_SESSION_GREETING_MODE", "welcome-back").strip().lower()
         if mode == "first-only" and not is_first:
             return
 
-        # Drop if a greeting is already in flight for this user (anti-recursion +
-        # anti-spam). The spawned thread owns the release.
         with _inflight_lock:
             if user_id in _inflight_users:
                 return
             _inflight_users.add(user_id)
 
-        # Stamp only after committing to greet — marking on a guard-busy return
-        # would suppress the day's real first-session greeting.
         _mark_greeted(user_id, now)
 
         spawned = False
         try:
-            # Deterministic brief message for first session (no LLM dependency).
             if is_first:
                 tz_name = os.environ.get("TELEGRAM_BOOT_TZ") or os.environ.get("TZ") or "Asia/Kolkata"
                 local = _local_now(tz_name)
                 greeting = "Good morning" if local.hour < 12 else ("Good afternoon" if local.hour < 18 else "Good evening")
                 _send_telegram(f"✅ {greeting}, {display_name}! {agent_name} is here.", chat_id)
 
-            # LLM greeting on background thread.
             context_summary = _build_today_context(user_id, session_key, now)
             topic = _recent_topic()
             if topic:
