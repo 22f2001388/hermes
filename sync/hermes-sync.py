@@ -21,7 +21,6 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
-# hf_transfer → HF_XET_HIGH_PERFORMANCE avoids FutureWarning on hub >=0.30
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 
 from huggingface_hub import HfApi, snapshot_download
@@ -61,7 +60,7 @@ EXCLUDED_DIRS = {
     "__pycache__",
     "node_modules",
     "venv",
-    "logs",  # log files are useless after a restart
+    "logs",
 }
 EXCLUDED_TOP_LEVEL = {"logs", STATE_FILE.name}
 EXCLUDED_SUFFIXES = (
@@ -87,7 +86,6 @@ HF_API = HfApi(token=HF_TOKEN) if HF_TOKEN else None
 STOP_EVENT = threading.Event()
 _NAMESPACE_CACHE: str | None = None
 
-# .env not backed up by default (secrets in backup is wrong tradeoff); status page banner.
 ENV_FILE = HERMES_HOME / ".env"
 ON_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("SPACE_HOST"))
 
@@ -373,11 +371,9 @@ def restore() -> bool:
     write_status("restoring", f"Restoring Hermes state from {uri}")
     try:
         bucket_id = ensure_bucket_exists()
-        # New-layout backups carry `.hermes/` prefix; old ones are keyed relative to .hermes.
         new_layout = not bucket_prefix_empty(bucket_id, f"{AGENT_NAME}/.hermes")
         target = BACKUP_ROOT if new_layout else HERMES_HOME
         target.mkdir(parents=True, exist_ok=True)
-        # No delete: baked-in local files must survive a restore of an empty/partial prefix.
         try:
             HF_API.sync_bucket(uri, str(target))
         except RepositoryNotFoundError:
@@ -493,7 +489,6 @@ def loop() -> int:
 
     warning = env_warning_payload()
     if warning is not None:
-        # One-liner so it's greppable in HF logs.
         print(f"Hermes sync WARNING: {warning['message']}")
 
     last_fingerprint: str | None = None
@@ -517,7 +512,6 @@ def loop() -> int:
         f"debounce={DEBOUNCE_SECONDS}s max={INTERVAL}s -> {uri}"
     )
 
-    # Change-driven scheduler.
     pending_since: float | None = None
     last_change_at: float | None = None
     candidate_marker = last_marker
@@ -529,7 +523,6 @@ def loop() -> int:
         try:
             current_marker = metadata_marker(BACKUP_ROOT)
         except Exception as exc:
-            # Don't let a transient stat error kill the loop.
             write_status("error", f"marker scan failed: {exc}")
             continue
 
@@ -556,7 +549,6 @@ def loop() -> int:
         except Exception as exc:
             write_status("error", f"Sync failed: {exc}")
             print(f"Hermes sync failed: {exc}")
-            # Back off briefly on failure so we don't hot-loop a broken upload.
             if STOP_EVENT.wait(min(5.0, POLL_INTERVAL * 2)):
                 break
         finally:

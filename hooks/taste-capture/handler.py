@@ -24,18 +24,10 @@ _LONGTERM_DIR = os.path.join(_HERMES_HOME, "memories", "longterm")
 _SIGNALS_FILE = os.path.join(_LONGTERM_DIR, "TASTE-signals.md")
 _SEEN_FILE = os.path.join(_HERMES_HOME, "hooks", "taste-capture", ".seen-signals")
 
-_SCAN_LIMIT = 60            # recent messages to inspect per session end
-_SEEN_CAP = 300             # remembered signal hashes to avoid re-capture
-_SIGNALS_MAX_BYTES = 32768  # cap the queue so it can never grow unbounded
-_MSG_MAX_LEN = 240          # truncate each captured message
 
-# state.db schema is owned upstream and unversioned here; resolve columns from a
-# whitelist at query time (mirrors the session-greeting hook).
 _TS_COL_CANDIDATES = ("created_at", "timestamp", "ts", "time", "created")
 _CONTENT_COL_CANDIDATES = ("content", "text", "message", "body", "data")
 
-# Correction / rejection / restyle markers. The whole alternation is wrapped in
-# word boundaries so short markers ("no", "not") can't fire inside other words.
 _MARKERS = (
     r"no", r"nope", r"don'?t", r"do not", r"not", r"wrong", r"incorrect",
     r"actually", r"instead", r"rather", r"revert", r"undo", r"redo", r"again",
@@ -46,10 +38,6 @@ _MARKERS = (
 )
 _MARKER_RE = re.compile(r"(?i)\b(?:" + "|".join(_MARKERS) + r")\b")
 
-# Conservative secret/PII redaction applied before anything touches disk. Bias
-# toward over-redaction — a false positive in a taste file is harmless; a leaked
-# secret is not. The token rule needs ≥20 chars with both a digit and a letter,
-# so it catches keys/IDs (AWS, bearer, hex) but not plain long words.
 _SECRET_RES = (
     re.compile(r"(?i)\b(?:sk|pk|rk|api|key|token|bearer|secret|pass(?:word)?)[-_]?[=:]\s*\S+"),
     re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{20,}\b"),
@@ -98,7 +86,6 @@ def _recent_messages() -> list:
             content_col = next((c for c in _CONTENT_COL_CANDIDATES if c in cols), None)
             if ts_col is None or content_col is None or "role" not in cols:
                 return []
-            # cols come from fixed whitelists, never user input → safe to inline.
             rows = conn.execute(
                 f"SELECT role, {content_col} FROM messages "
                 f"WHERE role IN ('user','assistant') AND {content_col} IS NOT NULL "
@@ -125,7 +112,6 @@ def _append_signals(blocks: list) -> None:
                 "# Queue for the taste-capture skill; cleared after consolidation.\n\n"
             )
         combined = existing + "\n".join(blocks) + "\n"
-        # Bound the queue: if oversized, keep the newest tail.
         encoded = combined.encode("utf-8")
         if len(encoded) > _SIGNALS_MAX_BYTES:
             combined = encoded[-_SIGNALS_MAX_BYTES:].decode("utf-8", "ignore")

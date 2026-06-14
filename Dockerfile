@@ -99,13 +99,15 @@ COPY --chown=hermes:hermes hooks/                         /opt/hermes/hooks/
 COPY --chown=hermes:hermes sync/                          /opt/hermes/sync/
 COPY --chown=hermes:hermes network/                       /opt/hermes/network/
 COPY --chown=hermes:hermes server/                        /opt/hermes/server/
+COPY --chown=hermes:hermes boot/                          /opt/hermes/boot/
 
 RUN chmod +x \
     /opt/hermes/start.sh \
     /opt/hermes/sync/hermes-sync.py \
     /opt/hermes/network/tmate-tools.sh \
     /opt/hermes/network/cloudflare-proxy-setup.py \
-    /opt/hermes/network/cloudflare-keepalive-setup.py
+    /opt/hermes/network/cloudflare-keepalive-setup.py \
+    /opt/hermes/boot/*.py
 
 RUN ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-new \
  && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-ls \

@@ -16,8 +16,6 @@ from pathlib import Path
 API_BASE = "https://api.cloudflare.com/client/v4"
 ENV_FILE = Path("/tmp/hermes-cloudflare-proxy.env")
 DEFAULT_ALLOWED = [
-    # Messaging & social — primary use-case for Cloudflare proxy on HF Spaces
-    # (geo-restrictions on Telegram, Discord, WhatsApp, etc.)
     "api.telegram.org",
     "discord.com",
     "discordapp.com",
@@ -26,23 +24,16 @@ DEFAULT_ALLOWED = [
     "slack.com",
     "api.slack.com",
     "web.whatsapp.com",
-    # Social — confirmed/likely blocked by HF firewall
     "graph.facebook.com",
     "graph.instagram.com",
     "api.twitter.com",
     "api.x.com",
-    # Google
     "googleapis.com",
     "google.com",
     "googleusercontent.com",
     "gstatic.com",
-    # Email HTTP APIs (SMTP ports are blocked)
     "api.resend.com",
     "api.sendgrid.com",
-    # NOTE: AI-provider domains (api.openai.com, api.anthropic.com, etc.) are
-    # intentionally NOT included here. Proxying AI calls routes API keys through
-    # the Cloudflare Worker without explicit opt-in. Users who need AI API calls
-    # proxied can add specific domains via CLOUDFLARE_PROXY_DOMAINS env var.
 ]
 
 
@@ -183,7 +174,6 @@ def _probe_live(probe_url: str) -> bool:
         with urllib.request.urlopen(probe, timeout=10) as resp:
             return _is_telegram_response(resp.read(2048).decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        # JSON 401/404 = Telegram live; HTML 404 = CF placeholder (not propagated).
         body = exc.read(2048).decode("utf-8", "replace") if exc.fp else ""
         return _is_telegram_response(body)
     except Exception:
@@ -225,8 +215,6 @@ def main() -> int:
             worker_name = derive_worker_name()
             proxy_url = f"https://{worker_name}.{subdomain}.workers.dev"
 
-            # Reuse if already live: redeploying resets workers.dev propagation,
-            # forcing the gateway to race a cold route. /bot paths bypass the secret.
             if _probe_live(_bot_probe_url(proxy_url)):
                 write_env(proxy_url, existing_secret)
                 print(f"Cloudflare worker exists, reusing (no redeploy): {proxy_url}")
@@ -252,8 +240,6 @@ def main() -> int:
                 )
                 write_env(proxy_url, proxy_secret)
 
-            # Block until consistently live — transient success would race
-            # the gateway into Cloudflare's placeholder 404.
             if wait_until_live(proxy_url):
                 print(f"Cloudflare worker live: {proxy_url}")
             else:
