@@ -64,9 +64,24 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Coding agents on PATH for in-container use: Claude Code + opencode.
-RUN npm install -g @anthropic-ai/claude-code opencode-ai \
+# opencode on PATH for in-container use (npm global).
+RUN npm install -g opencode-ai \
  && npm cache clean --force
+
+# Claude Code via the official native installer, under a fixed image path.
+RUN export HOME=/opt/claude-home \
+ && mkdir -p "$HOME" \
+ && curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -sf  "$HOME/.local/bin/claude"   /usr/local/bin/claude \
+ && ln -sfn "$HOME/.local/share/claude" /usr/local/share/claude \
+ && chmod -R a+rX /opt/claude-home/.local \
+ && claude --version
+
+# code-review-graph CLI/MCP server, baked into the image via uv tool.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+RUN uv tool install code-review-graph \
+ && code-review-graph --help >/dev/null
 
 # zsh as the interactive shell: oh-my-zsh + powerlevel10k + the custom plugins
 # the seeded ~/.zshrc references (start.sh writes that .zshrc each boot). OMZ
@@ -236,7 +251,8 @@ ENV HERMES_HOME=/opt/data \
     PYTHONUNBUFFERED=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
-    SHELL=/usr/bin/zsh
+    SHELL=/usr/bin/zsh \
+    DISABLE_AUTOUPDATER=1
 
 EXPOSE 7861
 

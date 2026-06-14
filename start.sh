@@ -829,6 +829,41 @@ PY
 }
 setup_coding_agents
 
+# ── Claude Code plugin marketplaces: re-add missing clones at boot ────────────
+restore_claude_marketplaces() {
+	command -v claude >/dev/null 2>&1 || return 0
+	local km="$HOME/.claude/plugins/known_marketplaces.json"
+	[ -f "$km" ] || return 0
+	export CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1
+	local src
+	while IFS= read -r src; do
+		[ -n "$src" ] || continue
+		if claude plugin marketplace add "$src" >/dev/null 2>&1; then
+			log "Re-added Claude marketplace: $src"
+		else
+			warn "Claude marketplace re-add failed: $src"
+		fi
+	done < <(python3 - "$km" "$HOME/.claude/plugins/marketplaces" <<'PY'
+import json, os, sys
+km, mdir = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(km))
+except Exception:
+    sys.exit(0)
+entries = data.get("marketplaces", data) if isinstance(data, dict) else {}
+if not isinstance(entries, dict):
+    sys.exit(0)
+for name, meta in entries.items():
+    if not isinstance(meta, dict):
+        continue
+    src = meta.get("source") or meta.get("repo") or meta.get("url")
+    if src and not os.path.isdir(os.path.join(mdir, name)):
+        print(src)
+PY
+	)
+}
+restore_claude_marketplaces
+
 # ── Hermes config setup (via CLI, not YAML) ───────────────────────────────
 log "Configuring Hermes via CLI"
 
