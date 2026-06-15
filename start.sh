@@ -84,7 +84,8 @@ if [ -n "${GATEWAY_TOKEN:-}" ]; then
 fi
 
 # ── Setup state dirs ──────────────────────────────────────────────────
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,home,plugins,webui}
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,plugins,webui}
+mkdir -p "$WORKSPACE_HOME"
 
 if [ -d "$APP_DIR/hooks" ]; then
   cp -a "$APP_DIR/hooks/." "$HERMES_HOME/hooks/"
@@ -201,13 +202,6 @@ if [ -n "$HERMES_RESTORE_PID" ]; then
   wait "$HERMES_RESTORE_PID" || true
   echo "HF restore complete."
 fi
-
-if [ -d "$HERMES_HOME/workspace" ] && [ ! -e "$WORKSPACE_HOME" ]; then
-  mv "$HERMES_HOME/workspace" "$WORKSPACE_HOME" &&
-    log "Migrated workspace -> $WORKSPACE_HOME" ||
-    log "WARN: workspace migration failed; data left at $HERMES_HOME/workspace"
-fi
-[ -d "$HERMES_HOME/workspace" ] || mkdir -p "$WORKSPACE_HOME"
 
 # ── Memory-OS: seed consolidation skill + cron job (additive, idempotent) ──
 if [ -d "$APP_DIR/skills" ]; then
