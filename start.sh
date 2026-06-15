@@ -402,14 +402,13 @@ if [ -f "$HERMES_HOME/p10k.zsh" ]; then
   cp -f "$HERMES_HOME/p10k.zsh" "$HOME/.p10k.zsh"
 fi
 
-# ── Pool key promotion ──
-promote_first_pool_key() {
-  local singular_var="$1"
-  local pool_var="$2"
-  local singular_val="${!singular_var:-}"
+promote_pool_last_key() {
+  local pool_var="$1"
   local pool_val="${!pool_var:-}"
-  [ -n "$singular_val" ] && return 0
   [ -n "$pool_val" ] || return 0
+  local singular_var
+  singular_var="$(printf '%s' "${pool_var%[sS]}" | tr '[:lower:]' '[:upper:]')"
+  [ -n "${!singular_var:-}" ] && return 0
   local last
   last=$(printf '%s' "$pool_val" |
     sed -e 's/^[[:space:]]*\[//' -e 's/\][[:space:]]*$//' |
@@ -421,20 +420,15 @@ promote_first_pool_key() {
   export "${singular_var}=$last"
 }
 
-for _pk_pair in \
-  "OPENROUTER:OPENROUTER" "ANTHROPIC:ANTHROPIC" "OPENAI:OPENAI" \
-  "GOOGLE:GOOGLE" "DEEPSEEK:DEEPSEEK" "KIMI:KIMI" \
-  "MINIMAX:MINIMAX" "NVIDIA:NVIDIA" "XAI:XAI" \
-  "KILOCODE:KILOCODE" "GLM:GLM" "ARCEEAI:ARCEEAI" \
-  "DASHSCOPE:DASHSCOPE" "GMI:GMI" "GROQ:GROQ" \
-  "TOKENHUB:TOKENHUB" "OLLAMA:OLLAMA" "OPENCODE:OPENCODE" \
-  "CLAUDE_CODE_OAUTH_TOKEN:CLAUDE_CODE_OAUTH_TOKEN"; do
-  _pk_s="${_pk_pair%%:*}_API_KEY"
-  _pk_p="${_pk_pair##*:}_API_KEYS"
-  [ "$_pk_pair" = "CLAUDE_CODE_OAUTH_TOKEN:CLAUDE_CODE_OAUTH_TOKEN" ] && _pk_p="CLAUDE_CODE_OAUTH_TOKENS"
-  promote_first_pool_key "$_pk_s" "$_pk_p"
+shopt -s nocasematch
+for _pk_var in $(compgen -e); do
+  case "$_pk_var" in
+    *MAX_TOKENS) ;;
+    *_API_KEYS | *_TOKENS) promote_pool_last_key "$_pk_var" ;;
+  esac
 done
-unset _pk_pair _pk_s _pk_p
+shopt -u nocasematch
+unset _pk_var
 
 # ── Coding-agent CLIs (claude-code + opencode) headless setup ───────────────
 setup_coding_agents() {
