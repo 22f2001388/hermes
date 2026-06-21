@@ -8,7 +8,7 @@ ARG WEBUI_REF
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl jq git python3 nodejs npm chromium tmate tmux zsh fzf \
+    ca-certificates curl jq git python3 nodejs npm chromium zsh fzf \
     zoxide bat eza gnupg neovim ffmpeg poppler-utils libnss3 libatk1.0-0 \
     libatk-bridge2.0-0 libdrm2 libgbm1 libxcomposite1 libxdamage1 libxrandr2 \
     libxkbcommon0 libx11-6 libxext6 libxfixes3 fonts-dejavu-core fonts-liberation \
@@ -67,12 +67,8 @@ COPY --chown=hermes:hermes server/   /opt/hermes/server/
 COPY --chown=hermes:hermes boot/     /opt/hermes/boot/
 
 RUN chmod +x /opt/hermes/start.sh /opt/hermes/sync/hermes-sync.py \
-    /opt/hermes/network/tmate-tools.sh /opt/hermes/network/cloudflare-proxy-setup.py \
+    /opt/hermes/network/cloudflare-proxy-setup.py \
     /opt/hermes/network/cloudflare-keepalive-setup.py /opt/hermes/boot/*.py \
- && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-new \
- && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-ls \
- && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-kill \
- && ln -sf /opt/hermes/network/tmate-tools.sh /usr/local/bin/tmate-tools \
  && chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/npm-global \
  && chown hermes:hermes /home \
  && echo 'export PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:$PATH"' \

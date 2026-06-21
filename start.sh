@@ -514,17 +514,7 @@ else
     AGENT_WORKSPACE="$WORKSPACE_HOME"
   fi
 fi
-export TMATE_CWD="$AGENT_WORKSPACE"
 hermes config set terminal.cwd "$AGENT_WORKSPACE" 2>/dev/null || true
-TMUX_CONF="$HOME/.tmux.conf"
-if ! grep -qxF 'set -g mouse on' "$TMUX_CONF" 2>/dev/null; then
-  cat >>"$TMUX_CONF" <<'TMUXCONF'
-set -g mouse on
-bind c new-window -c "#{pane_current_path}"
-bind '"' split-window -v -c "#{pane_current_path}"
-bind % split-window -h -c "#{pane_current_path}"
-TMUXCONF
-fi
 hermes config set compression.enabled true 2>/dev/null || true
 hermes config set security.redact_secrets true 2>/dev/null || true
 hermes config set display.background_process_notifications "${HERMES_BACKGROUND_NOTIFICATIONS:-result}" 2>/dev/null || true
@@ -576,17 +566,6 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     CLEAR_WEBHOOK_PID=$!
   fi
 fi
-
-# ── SSH Debug Access (tmate) ──────────────────────────────────────────────────
-TMATE_SUPERVISOR_PID=""
-TMATE_DIR="${TMATE_DIR:-/tmp/tmate}"
-start_tmate_supervised() {
-  command -v tmate-tools >/dev/null 2>&1 || return 0
-  echo "set -g mouse off" >"$HOME/.tmate.conf"
-  tmate-tools supervise &
-  TMATE_SUPERVISOR_PID=$!
-}
-start_tmate_supervised
 
 # ── Startup summary ────────────────────────────────────────────────────────────
 log ""
@@ -686,10 +665,9 @@ graceful_shutdown() {
   trap '' SIGTERM SIGINT
   echo "Shutting down"
   sync_now
-  for pid in "${WEBUI_PID:-}" "${GATEWAY_PID:-}" "${DASHBOARD_PID:-}" "${HEALTH_PID:-}" "${SYNC_LOOP_PID:-}" "${TMATE_SUPERVISOR_PID:-}"; do
+  for pid in "${WEBUI_PID:-}" "${GATEWAY_PID:-}" "${DASHBOARD_PID:-}" "${HEALTH_PID:-}" "${SYNC_LOOP_PID:-}"; do
     kill_tree "$pid"
   done
-  tmate-tools kill boot 2>/dev/null || true
   kill $(jobs -p) 2>/dev/null || true
   exit 0
 }
@@ -846,13 +824,5 @@ while true; do
     [ "$SUP_DELAY" -gt 0 ] && sleep "$SUP_DELAY"
     SYNC_LOOP_PID=""
     start_sync_loop
-  fi
-  # tmate boot supervisor — restart the supervisor process if it dies
-  if [ -n "${TMATE_SUPERVISOR_PID:-}" ] && ! kill -0 "$TMATE_SUPERVISOR_PID" 2>/dev/null; then
-    supervisor_backoff TMATE
-    warn "tmate supervisor died. Respawning in ${SUP_DELAY}s"
-    [ "$SUP_DELAY" -gt 0 ] && sleep "$SUP_DELAY"
-    TMATE_SUPERVISOR_PID=""
-    start_tmate_supervised || true
   fi
 done
