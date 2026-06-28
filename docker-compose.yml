@@ -6,6 +6,7 @@ services:
       args:
         WEBUI_REF: ${WEBUI_REF:-v0.51.549}
     image: hermes-webui:local
+    restart: unless-stopped
     ports:
       - "7861:7861"
     env_file:
