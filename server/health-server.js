@@ -2,6 +2,7 @@
 
 const http = require("http");
 const fs = require("fs");
+const { log, debug } = require("./lib/logger");
 
 const config = require("./lib/config");
 const auth = require("./lib/auth");
@@ -363,7 +364,7 @@ server.timeout = 0;
 server.keepAliveTimeout = 65000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Hermes WebUI router listening on 0.0.0.0:${PORT}`);
+  log(`Hermes WebUI router listening on 0.0.0.0:${PORT}`);
 });
 
 server.on("upgrade", handleUpgrade);

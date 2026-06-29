@@ -1,6 +1,7 @@
 "use strict";
 
 const https = require("https");
+const { log, debug } = require("./logger");
 
 const PORT = Number(process.env.PORT || 7861);
 const GATEWAY_PORT = Number(process.env.API_SERVER_PORT || 8642);
@@ -46,12 +47,12 @@ const privacyDetectionReady = new Promise((res) => { _privacyDetectionResolve = 
 if (_spacPrivacyEnv === "public") {
   SPACE_IS_PRIVATE = false;
   _privacyDetectionDone = true;
-  console.log("[health-server] Space privacy: public (SPACE_PRIVACY env override)");
+  debug("[health-server] Space privacy: public (SPACE_PRIVACY env override)");
   _privacyDetectionResolve();
 } else if (_spacPrivacyEnv === "private") {
   SPACE_IS_PRIVATE = true;
   _privacyDetectionDone = true;
-  console.log("[health-server] Space privacy: private (SPACE_PRIVACY env override)");
+  debug("[health-server] Space privacy: private (SPACE_PRIVACY env override)");
   _privacyDetectionResolve();
 } else {
   // Fail-secure default until API call resolves
@@ -102,7 +103,7 @@ async function detectSpacePrivacy() {
         r.setTimeout(8000, () => { r.destroy(); resolve({ ok: false }); });
         r.end();
       });
-      console.log(`[health-server] Privacy detection attempt ${attempt}/${MAX_ATTEMPTS}: ok=${result.ok}`);
+      debug(`[health-server] Privacy detection attempt ${attempt}/${MAX_ATTEMPTS}: ok=${result.ok}`);
       if (result.ok) { detected = true; break; }
     } catch {}
     const delay = Math.min(2000 * attempt, 10000);
@@ -111,7 +112,7 @@ async function detectSpacePrivacy() {
   if (!detected) {
     console.warn(`[health-server] Privacy detection failed after ${MAX_ATTEMPTS} attempts — defaulting to ${SPACE_IS_PRIVATE ? "private" : "public"}. TIP: Set SPACE_PRIVACY=public in Space secrets to skip API detection.`);
   } else {
-    console.log(`[health-server] Space privacy detected: ${SPACE_IS_PRIVATE ? "private" : "public"}`);
+    log(`[health-server] Space privacy detected: ${SPACE_IS_PRIVATE ? "private" : "public"}`);
   }
   _privacyDetectionDone = true;
   _privacyDetectionResolve();

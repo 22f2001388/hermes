@@ -3,13 +3,14 @@ set -euo pipefail
 
 umask 0077
 
-# ── Logging functions ──────────────────────────────────────────────────────
 log() { echo "$*"; }
 warn() { echo "WARN: $*" >&2; }
 die() {
   echo "FATAL: $*" >&2
   exit 1
 }
+debug() { [ "${HERMES_DEBUG:-0}" = "1" ] && echo "DEBUG: $*" || true; }
+HERMES_DEBUG="${HERMES_DEBUG:-0}"
 
 echo ""
 echo " ╔══════════════════════════════════════════╗"
@@ -31,7 +32,7 @@ STARTUP_FILE="$HERMES_HOME/startup.sh"
 export HERMES_BACKUP_ROOT="$AGENT_HOME"
 
 log "Agent: $AGENT_NAME"
-log "State: $HERMES_HOME"
+debug "State: $HERMES_HOME"
 
 # ── Platform detection ────────────────────────────────────────────────────────
 if [ -n "${SPACE_ID:-}" ]; then
@@ -48,7 +49,7 @@ else
       ;;
   esac
 fi
-log "Detected platform: $PLATFORM"
+debug "Detected platform: $PLATFORM"
 
 # ── VPS: load .env from script directory (before anything needs env vars) ──
 if [ "$PLATFORM" = "vps" ] && [ -f "$SCRIPT_DIR/.env" ]; then
@@ -91,7 +92,7 @@ fi
 
 if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
   export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true
-  log "Telegram IP-fallback disabled (base_url-only routing on $PLATFORM)"
+  debug "Telegram IP-fallback disabled (base_url-only routing on $PLATFORM)"
 fi
 
 PUBLIC_PORT="${PORT:-7861}"
@@ -158,7 +159,7 @@ if mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null &&
   { [ -L "$WORKSPACE_LINK" ] || [ ! -e "$WORKSPACE_LINK" ]; } &&
   ln -sfn "$AGENT_HOME" "$WORKSPACE_LINK" 2>/dev/null; then
   export HOME="$WORKSPACE_LINK"
-  log "Home: $HOME -> $AGENT_HOME"
+  debug "Home: $HOME -> $AGENT_HOME"
   if [ "$HERMES_DATA_ROOT" != "$AGENT_HOME" ]; then
     printf '%s\n' \
       '# hermes: re-home login shells to the per-agent friendly home' \
@@ -342,7 +343,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
 fi
 
 if [ "${TELEGRAM_MODE:-}" = "polling" ] && [ -n "${TELEGRAM_WEBHOOK_URL:-}" ]; then
-  log "TELEGRAM_MODE=polling — ignoring TELEGRAM_WEBHOOK_URL"
+  debug "TELEGRAM_MODE=polling — ignoring TELEGRAM_WEBHOOK_URL"
   unset TELEGRAM_WEBHOOK_URL
 fi
 
@@ -505,7 +506,7 @@ restore_claude_marketplaces() {
     [ -n "$src" ] || continue
     (
       if claude plugin marketplace add "$src" >/dev/null 2>&1; then
-        log "Re-added Claude marketplace: $src"
+        debug "Re-added Claude marketplace: $src"
       else
         warn "Claude marketplace re-add failed: $src"
       fi
@@ -518,12 +519,12 @@ restore_claude_marketplaces &
 MARKETPLACE_PID=$!
 
 # ── Hermes config setup (via CLI, not YAML) ───────────────────────────────
-log "Configuring Hermes via CLI"
+debug "Configuring Hermes via CLI"
 
 # ── hermes update on rerun (background — overlaps with bg-tasks wait) ─────────
 HERMES_UPDATE_PID=""
 if "$APP_DIR/boot/is-first-run.py"; then
-  log "Re-run detected — running hermes update"
+  debug "Re-run detected — running hermes update"
   (hermes update >/dev/null 2>&1 || warn "hermes update failed (continuing)") &
   HERMES_UPDATE_PID=$!
 fi
@@ -533,22 +534,22 @@ wait "${CODING_AGENTS_PID:-}" "${MARKETPLACE_PID:-}" 2>/dev/null || true
 wait "${HERMES_UPDATE_PID:-}" 2>/dev/null || true
 
 # ── Idempotent API-key sync (pools + singular provider keys) ────────────────
-log "Syncing API keys (idempotent)"
+debug "Syncing API keys (idempotent)"
 python3 "$APP_DIR/sync/keys-sync.py" || warn "key sync failed (continuing)"
 
 # ── Set model + provider via CLI (more reliable than YAML) ───────────────────
 hermes config set model "$MODEL_FOR_CONFIG" &&
-  log "✓ Model: $MODEL_FOR_CONFIG" ||
+  debug "✓ Model: $MODEL_FOR_CONFIG" ||
   warn "Failed to set model (continuing)"
 
 hermes config set provider "$PROVIDER_FOR_CONFIG" &&
-  log "✓ Provider: $PROVIDER_FOR_CONFIG" ||
+  debug "✓ Provider: $PROVIDER_FOR_CONFIG" ||
   warn "Failed to set provider (continuing)"
 
 # ── Custom endpoint support ────────────────────────────────────────────────────
 if [ -n "${CUSTOM_BASE_URL:-}" ]; then
   hermes config set model.base_url "${CUSTOM_BASE_URL}" &&
-    log "✓ Custom base_url: $CUSTOM_BASE_URL" ||
+    debug "✓ Custom base_url: $CUSTOM_BASE_URL" ||
     warn "Failed to set custom base_url"
 
   [ -n "${CUSTOM_API_KEY:-}" ] &&
@@ -576,12 +577,12 @@ hermes config set display.background_process_notifications "${HERMES_BACKGROUND_
 
 # ── Telegram platform config (augments CLI-written config.yaml) ───────────────
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-  log "Configuring Telegram platform"
+  debug "Configuring Telegram platform"
   "$APP_DIR/boot/configure-telegram.py"
 fi
 
 hermes config set telegram.reactions true &&
-  log "✓ Telegram reactions enabled" ||
+  debug "✓ Telegram reactions enabled" ||
   warn "Failed to set telegram.reactions (continuing)"
 
 if [ "$PLATFORM" = "hf" ]; then
@@ -592,7 +593,7 @@ if [ "$PLATFORM" = "hf" ]; then
       SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "/usr/local/lib/python3.14/site-packages")
       find "$SITE_PACKAGES" -path "*/hermes*" -type f \( -name "*.py" -o -name "*.json" \) \
         -exec sed -i "s/api.telegram.org/$PROXY_HOST/g" {} + 2>/dev/null || true
-      log "✓ Telegram proxy (sed-patch) -> $PROXY_HOST"
+      debug "✓ Telegram proxy (sed-patch) -> $PROXY_HOST"
     fi
   fi
 
@@ -602,12 +603,12 @@ if [ "$PLATFORM" = "hf" ]; then
       -e 's/from telegram.error import NetworkError, TimedOut$/from telegram.error import NetworkError, TimedOut, InvalidToken/' \
       -e 's/except (NetworkError, TimedOut, OSError) as init_err:/except (NetworkError, TimedOut, OSError, InvalidToken) as init_err:/' \
       "$TG_FILE" 2>/dev/null &&
-      log "✓ Telegram connect-retry hardened (sed-patch: retry InvalidToken)" ||
+      debug "✓ Telegram connect-retry hardened (sed-patch: retry InvalidToken)" ||
       warn "Failed to harden Telegram connect-retry (continuing)"
   fi
 
   export HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT="${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
-  log "✓ Telegram connect timeout -> ${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT}s"
+  debug "✓ Telegram connect timeout -> ${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT}s"
 fi
 
 # ── Polling mode: clear any stale webhook (background — completes before gateway polls) ──
@@ -617,7 +618,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     warn "Polling on $PLATFORM without a Telegram proxy (set CLOUDFLARE_PROXY_URL or TELEGRAM_BASE_URL) — outbound api.telegram.org is blocked; getUpdates will hang"
   else
     (TELEGRAM_API_BASE="${TELEGRAM_BASE_URL:-https://api.telegram.org/bot}" \
-      "$APP_DIR/boot/clear-webhook.py" && log "Telegram webhook cleared (polling mode)" || warn "deleteWebhook failed (continuing; polling may 409 if a webhook is still registered)") &
+      "$APP_DIR/boot/clear-webhook.py" && debug "Telegram webhook cleared (polling mode)" || warn "deleteWebhook failed (continuing; polling may 409 if a webhook is still registered)") &
     CLEAR_WEBHOOK_PID=$!
   fi
 fi
