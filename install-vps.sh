@@ -188,6 +188,17 @@ eval "$(mise activate bash)"
 VENVPATH
 chmod 644 /etc/profile.d/hermes-venv.sh
 
+# ── Install systemd unit + env file ────────────────────────────────────────
+# Without this, `systemctl enable --now hermes` (the final step below) fails:
+# the unit was never placed and EnvironmentFile=/etc/hermes.env must exist.
+echo "Installing systemd unit..."
+install -m 644 "$REPO_ROOT/hermes.service" /etc/systemd/system/hermes.service
+if [ ! -f /etc/hermes.env ]; then
+  echo "Creating /etc/hermes.env template (edit before starting)..."
+  install -m 600 -o root -g root "$REPO_ROOT/hermes.env.example" /etc/hermes.env
+fi
+systemctl daemon-reload
+
 # ── Verification ──────────────────────────────────────────────────────────
 echo ""
 echo "Verifying installation..."
@@ -207,11 +218,9 @@ echo ""
 echo "Provisioning complete."
 echo ""
 echo "Next steps:"
-echo "  1. Set /etc/hermes.env (template below)"
+echo "  1. Edit /etc/hermes.env (created from template) — set at minimum:"
+echo "       GATEWAY_TOKEN=your-secret-token-here"
+echo "       LLM_MODEL=provider/model-name"
+echo "       OPENAI_API_KEY=sk-..."
+echo "       HF_TOKEN=hf_... (optional, for HuggingFace backup)"
 echo "  2. systemctl enable --now hermes"
-echo ""
-echo "Example /etc/hermes.env:"
-echo "  GATEWAY_TOKEN=your-secret-token-here"
-echo "  LLM_MODEL=provider/model-name"
-echo "  OPENAI_API_KEY=sk-..."
-echo "  HF_TOKEN=hf_... (optional, for HuggingFace backup)"
