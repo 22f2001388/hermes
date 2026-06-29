@@ -17,7 +17,8 @@ echo " ║                Hermes                    ║"
 echo " ╚══════════════════════════════════════════╝"
 echo ""
 
-APP_DIR="${HERMES_APP_DIR:-/opt/hermes}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="${HERMES_APP_DIR:-$SCRIPT_DIR}"
 WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
 HERMES_DATA_ROOT="${HERMES_HOME:-/opt/data}"
 
@@ -38,9 +39,55 @@ if [ -n "${SPACE_ID:-}" ]; then
 elif [ -n "${RENDER:-}" ]; then
   PLATFORM="render"
 else
-  PLATFORM="local"
+  case "$(hostname | tr '[:upper:]' '[:lower:]')" in
+    vps*|*vps)
+      PLATFORM="vps"
+      ;;
+    *)
+      PLATFORM="local"
+      ;;
+  esac
 fi
 log "Detected platform: $PLATFORM"
+
+# ── VPS: load .env from script directory (before anything needs env vars) ──
+if [ "$PLATFORM" = "vps" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+  log "Loading .env from $SCRIPT_DIR/.env"
+  set -a
+  . "$SCRIPT_DIR/.env"
+  set +a
+fi
+
+# ── VPS auto-provisioning ─────────────────────────────────────────────────────
+if [ "$PLATFORM" = "vps" ] && ! id hermes >/dev/null 2>&1; then
+  log "VPS detected but system not provisioned — running install-vps.sh..."
+  INSTALLER=""
+  for candidate in "$APP_DIR/install-vps.sh" "$(dirname "$0")/install-vps.sh" ./install-vps.sh; do
+    if [ -f "$candidate" ]; then
+      INSTALLER="$candidate"
+      break
+    fi
+  done
+  if [ -z "$INSTALLER" ]; then
+    die "install-vps.sh not found. Clone the repo and run from its root, or run install-vps.sh manually first."
+  fi
+  if [ "$(id -u)" = "0" ]; then
+    bash "$INSTALLER"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo bash "$INSTALLER"
+  else
+    die "install-vps.sh requires root. Re-run with: sudo bash $0"
+  fi
+  APP_DIR="/opt/hermes"
+  HERMES_WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
+  log "Provisioning complete — continuing startup..."
+fi
+
+# ── VPS: ensure venv + mise runtimes are on PATH (systemd sets this, direct runs don't) ──
+if [ "$PLATFORM" = "vps" ]; then
+  export MISE_DATA_DIR="${MISE_DATA_DIR:-/opt/mise}"
+  export PATH="/opt/hermes/.venv/bin:/opt/hermes/npm-global/bin:/opt/mise/shims:$PATH"
+fi
 
 if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
   export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true
@@ -712,7 +759,7 @@ fi
 
 start_dashboard
 
-if [ -f "$HERMES_HOME/.env" ]; then
+if [ "$PLATFORM" != "vps" ] && [ -f "$HERMES_HOME/.env" ]; then
   echo "Sourcing captured shell env from \$HERMES_HOME/.env"
   set -a
   . "$HERMES_HOME/.env"
