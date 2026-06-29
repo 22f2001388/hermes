@@ -8,7 +8,7 @@ ARG WEBUI_REF
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl jq git python3 nodejs npm chromium zsh fzf \
+    ca-certificates curl jq git python3 nodejs npm zsh fzf \
     zoxide bat eza gnupg neovim ffmpeg poppler-utils libnss3 libatk1.0-0 \
     libatk-bridge2.0-0 libdrm2 libgbm1 libxcomposite1 libxdamage1 libxrandr2 \
     libxkbcommon0 libx11-6 libxext6 libxfixes3 fonts-dejavu-core fonts-liberation \
@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && (apt-get install -y --no-install-recommends libasound2 2>/dev/null \
         || apt-get install -y --no-install-recommends libasound2t64 2>/dev/null || true) \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir "huggingface_hub>=1.18.0" hf_transfer pyyaml
+
+RUN npx playwright install chromium
 
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -80,7 +82,7 @@ ENV HERMES_HOME=/opt/data HERMES_APP_DIR=/opt/hermes \
     HERMES_WEBUI_REPO=/opt/hermes-webui \
     HERMES_WEBUI_TRUST_FORWARDED_HOST=1 PYTHONUNBUFFERED=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium SHELL=/usr/bin/zsh \
+    SHELL=/usr/bin/zsh \
     DISABLE_AUTOUPDATER=1 PATH="/opt/hermes/npm-global/bin:${PATH}"
 
 EXPOSE 7861

@@ -18,7 +18,8 @@ from pathlib import Path
 
 API_BASE = "https://api.cloudflare.com/client/v4"
 DEFAULT_WORKER_NAME = "hermes-gemini-proxy"
-ENV_FILE = Path("/tmp/hermes-gemini-proxy.env")
+# Per-user state; /tmp fallback for standalone runs only (root-owned files block the service user).
+ENV_FILE = Path(os.environ.get("GEMINI_PROXY_ENV_FILE") or "/tmp/hermes-gemini-proxy.env")
 HTTP_TIMEOUT = 15
 PROBE_MODEL = "gemini-flash-lite-latest"
 
@@ -217,6 +218,7 @@ def deploy_worker(api_token: str, account_id: str, worker_name: str) -> None:
 
 
 def write_env(base_url: str) -> None:
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE.write_text(f'export GEMINI_BASE_URL="{base_url}"\n', encoding="utf-8")
     ENV_FILE.chmod(0o600)
 

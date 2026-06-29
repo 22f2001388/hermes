@@ -53,10 +53,12 @@ INCLUDE_ENV = os.environ.get("SYNC_INCLUDE_ENV", "").strip().lower() in {
 MAX_FILE_SIZE_BYTES = int(os.environ.get("SYNC_MAX_FILE_BYTES", str(50 * 1024 * 1024)))
 
 EXCLUDED_DIRS = {
+    ".bun",
     ".cache",
     ".cargo",
     ".code-review-graph",
     ".npm",
+    ".npm-global",
     ".rustup",
     ".venv",
     "__pycache__",
@@ -64,7 +66,9 @@ EXCLUDED_DIRS = {
     "venv",
     "logs",
 }
-EXCLUDED_TOP_LEVEL = {"logs", STATE_FILE.name}
+# VPS: app install dirs (app/, .venv, npm-global, webui) share the backup root
+# (the hermes user's home). Harmless on HF/Docker where these names don't appear.
+EXCLUDED_TOP_LEVEL = {"logs", STATE_FILE.name, "app", "npm-global", "webui"}
 EXCLUDED_SUFFIXES = (
     ".log",
     ".log.1",
@@ -80,6 +84,11 @@ EXCLUDED_PATH_PREFIXES = (
     ".claude/plugins/marketplaces",
     ".local/bin",
     ".local/share/uv",
+    # claude CLI data — reprovisioned at boot by ensure_runtime_tools in start.sh.
+    # Other .local/share tools stay: no reinstall path, pki may hold real certs.
+    ".bun/install",
+    # agent-browser downloaded browser binaries — re-fetched on demand.
+    ".agent-browser/browsers",
 )
 if not INCLUDE_ENV:
     EXCLUDED_TOP_LEVEL.add(".env")

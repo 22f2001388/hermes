@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+import os
 import sys
 from pathlib import Path
 
 try:
-    p = Path("/opt/hermes/hermes_cli/kanban_db.py")
+    p = Path(os.environ.get("HERMES_APP_DIR", "/opt/hermes")) / "hermes_cli" / "kanban_db.py"
     if not p.exists():
         print("kanban patch: file not found, skipping")
         sys.exit(0)

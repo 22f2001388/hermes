@@ -11,6 +11,7 @@ def _read_json(path):
     except Exception:
         return {}
 home = pathlib.Path(os.environ["CODING_HOME"])
+autoupdate = os.environ.get("HERMES_AUTOUPDATE") == "1"
 
 (home / ".claude").mkdir(parents=True, exist_ok=True)
 sjson = home / ".claude" / "settings.json"
@@ -19,7 +20,7 @@ perms = s.setdefault("permissions", {})
 if isinstance(perms, dict):
     perms.setdefault("defaultMode", "bypassPermissions")
 env = s.setdefault("env", {})
-if isinstance(env, dict):
+if isinstance(env, dict) and not autoupdate:
     env.setdefault("DISABLE_AUTOUPDATER", "1")
 sjson.write_text(json.dumps(s, indent=2))
 gjson = home / ".claude.json"
@@ -32,7 +33,7 @@ ocdir.mkdir(parents=True, exist_ok=True)
 ocjson = ocdir / "opencode.json"
 cfg = _read_json(ocjson)
 cfg.setdefault("$schema", "https://opencode.ai/config.json")
-cfg.setdefault("autoupdate", False)
+cfg.setdefault("autoupdate", autoupdate)
 perm = cfg.setdefault("permission", {})
 if isinstance(perm, dict):
     perm.setdefault("edit", "allow")

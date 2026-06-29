@@ -1,6 +1,9 @@
 [Unit]
 Description=Hermes AI Agent
-After=network.target
+# network-online (not just network.target) so boot-time network calls — HF sync,
+# provider probes, plugin marketplace re-add — run after the network is up.
+After=network-online.target
+Wants=network-online.target
 Documentation=https://github.com/NousResearch/hermes-agent
 # Restart throttle (StartLimit* belong in [Unit] on systemd >= v230)
 StartLimitIntervalSec=60s
@@ -9,33 +12,32 @@ StartLimitBurst=3
 [Service]
 Type=simple
 User=hermes
-WorkingDirectory=/opt/hermes
-ExecStart=/opt/hermes/start.sh
+WorkingDirectory=/home/hermes/app
+ExecStart=/home/hermes/app/start.sh
 EnvironmentFile=/etc/hermes.env
 
 # systemd does NOT source /etc/profile.d — set the runtime PATH here so start.sh
 # finds `hermes` (venv), `opencode` (npm-global), and node/python/uv/bun (mise shims).
-Environment=PATH=/opt/hermes/.venv/bin:/opt/hermes/npm-global/bin:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin
-# Static runtime env from Dockerfile ENV block (lines 79-84)
-Environment=HERMES_APP_DIR=/opt/hermes
-Environment=HERMES_HOME=/opt/data
-Environment=HERMES_WEBUI_REPO=/opt/hermes-webui
-Environment=HERMES_WEBUI_TRUST_FORWARDED_HOST=1
+Environment=PATH=/home/hermes/.venv/bin:/home/hermes/npm-global/bin:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin
+# Force VPS platform regardless of hostname (start.sh detection falls back to hostname match)
+Environment=HERMES_PLATFORM=vps
+# Enable coding-agent CLI auto-updates on this always-on box (HF/Docker keep them disabled)
+Environment=HERMES_AUTOUPDATE=1
+Environment=HERMES_APP_DIR=/home/hermes/app
+Environment=HERMES_HOME=/home/hermes
 Environment=PYTHONUNBUFFERED=1
 Environment=MISE_DATA_DIR=/opt/mise
 Environment=HF_HUB_ENABLE_HF_TRANSFER=1
-Environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Graceful shutdown: SIGTERM allows start.sh's trap to run final sync
+# Graceful shutdown: SIGTERM → start.sh trap runs final sync
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=60
 
-# Automatic restart on failure (start.sh has internal supervisor)
+# Restart on failure (start.sh has its own supervisor)
 Restart=on-failure
 RestartSec=5
 
-# Standard output/error to journald
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hermes

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+import os
 import sys
 from pathlib import Path
 
-p = Path("/opt/hermes-webui/server.py")
+p = Path(os.environ.get("HERMES_WEBUI_REPO", "/opt/hermes-webui")) / "server.py"
 if not p.exists():
     print("webui quiet-poll patch: server.py absent, skipping")
     sys.exit(0)

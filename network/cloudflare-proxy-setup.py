@@ -14,7 +14,8 @@ import urllib.request
 from pathlib import Path
 
 API_BASE = "https://api.cloudflare.com/client/v4"
-ENV_FILE = Path("/tmp/hermes-cloudflare-proxy.env")
+# Per-user state; /tmp fallback for standalone runs only (root-owned files block the service user).
+ENV_FILE = Path(os.environ.get("CF_PROXY_ENV_FILE") or "/tmp/hermes-cloudflare-proxy.env")
 DEFAULT_ALLOWED = [
     "api.telegram.org",
     "discord.com",
@@ -144,6 +145,7 @@ async function handleRequest(request) {{
 
 
 def write_env(proxy_url: str, proxy_secret: str) -> None:
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE.write_text(
         f'export CLOUDFLARE_PROXY_URL="{proxy_url}"\nexport CLOUDFLARE_PROXY_SECRET="{proxy_secret}"\n',
         encoding="utf-8",

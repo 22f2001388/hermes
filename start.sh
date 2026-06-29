@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${HERMES_APP_DIR:-$SCRIPT_DIR}"
 WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
 HERMES_DATA_ROOT="${HERMES_HOME:-/opt/data}"
+HERMES_VENV="${HERMES_VENV:-$APP_DIR/.venv}"
 
 export AGENT_NAME="${AGENT_NAME:-primary}"
 AGENT_HOME="${HERMES_DATA_ROOT}/${AGENT_NAME}"
@@ -35,7 +36,9 @@ log "Agent: $AGENT_NAME"
 debug "State: $HERMES_HOME"
 
 # ── Platform detection ────────────────────────────────────────────────────────
-if [ -n "${SPACE_ID:-}" ]; then
+if [ -n "${HERMES_PLATFORM:-}" ]; then
+  PLATFORM="$HERMES_PLATFORM"
+elif [ -n "${SPACE_ID:-}" ]; then
   PLATFORM="hf"
 elif [ -n "${RENDER:-}" ]; then
   PLATFORM="render"
@@ -51,17 +54,35 @@ else
 fi
 debug "Detected platform: $PLATFORM"
 
+if [ "$PLATFORM" = "vps" ]; then
+  HERMES_DATA_ROOT="/home/hermes"
+  AGENT_HOME="$HERMES_DATA_ROOT"
+  HERMES_HOME="${AGENT_HOME}/.hermes"
+  WORKSPACE_HOME="${AGENT_HOME}/workspace"
+  WORKSPACE_LINK=""
+  HERMES_VENV="${AGENT_HOME}/.venv"
+  STARTUP_FILE="$HERMES_HOME/startup.sh"
+  WEBUI_REPO="${HERMES_WEBUI_REPO:-/home/hermes/webui}"
+  export HERMES_BACKUP_ROOT="$AGENT_HOME"
+fi
+
 # ── VPS: load .env from script directory (before anything needs env vars) ──
 if [ "$PLATFORM" = "vps" ] && [ -f "$SCRIPT_DIR/.env" ]; then
   log "Loading .env from $SCRIPT_DIR/.env"
+  chmod 600 "$SCRIPT_DIR/.env" 2>/dev/null || true  # ponytail: secrets 0600, not world-readable (single-user VPS)
   set -a
   . "$SCRIPT_DIR/.env"
   set +a
 fi
 
 # ── VPS auto-provisioning ─────────────────────────────────────────────────────
-if [ "$PLATFORM" = "vps" ] && ! id hermes >/dev/null 2>&1; then
-  log "VPS detected but system not provisioned — running install-vps.sh..."
+# Re-run the installer until it writes its completion stamp. `! id hermes` is not a
+# safe guard: a partial install creates the hermes user then dies, and the box would
+# never self-heal. The installer is idempotent, so re-running to finish is cheap.
+# Force a re-provision by removing the stamp; refresh an updated repo by running
+# install-vps.sh directly (it re-touches the stamp).
+if [ "$PLATFORM" = "vps" ] && [ ! -f /home/hermes/.hermes-provisioned ]; then
+  log "VPS not fully provisioned (no completion stamp) — running install-vps.sh..."
   INSTALLER=""
   for candidate in "$APP_DIR/install-vps.sh" "$(dirname "$0")/install-vps.sh" ./install-vps.sh; do
     if [ -f "$candidate" ]; then
@@ -79,15 +100,33 @@ if [ "$PLATFORM" = "vps" ] && ! id hermes >/dev/null 2>&1; then
   else
     die "install-vps.sh requires root. Re-run with: sudo bash $0"
   fi
-  APP_DIR="/opt/hermes"
-  HERMES_WEBUI_REPO="${HERMES_WEBUI_REPO:-/opt/hermes-webui}"
+  APP_DIR="/home/hermes/app"
+  HERMES_WEBUI_REPO="${HERMES_WEBUI_REPO:-/home/hermes/webui}"
+  WEBUI_REPO="$HERMES_WEBUI_REPO"
   log "Provisioning complete — continuing startup..."
 fi
 
-# ── VPS: ensure venv + mise runtimes are on PATH (systemd sets this, direct runs don't) ──
+# ── VPS: never run the service as root ────────────────────────────────────────
+# The systemd unit runs us as User=hermes; this only catches a manual `sudo
+# start.sh`. As root we seed /home/hermes with root-owned state files the hermes
+# service can no longer overwrite, so a later boot dies with EACCES on
+# restore/seed. Provisioning above needed root — hand the actual run to hermes.
+if [ "$PLATFORM" = "vps" ] && [ "$(id -u)" = "0" ]; then
+  log "Running as root — re-executing as hermes to keep state hermes-owned."
+  # Absolute path: runuser PATH-searches a slash-less "$0" (e.g. `sudo bash
+  # start.sh`) under hermes's env and fails. SCRIPT_DIR is already absolutised.
+  SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+  command -v runuser >/dev/null 2>&1 ||
+    die "runuser not found — cannot drop root to hermes. Start via systemd or: sudo -u hermes $SELF"
+  shopt -s execfail # let a failed exec return so the die below reports it
+  exec runuser -u hermes -- "$SELF" "$@" ||
+    die "could not re-exec $SELF as hermes (is it readable by hermes?). Start via systemd instead."
+fi
+
+# ── VPS: PATH for direct (non-systemd) runs ────────────────────────────
 if [ "$PLATFORM" = "vps" ]; then
   export MISE_DATA_DIR="${MISE_DATA_DIR:-/opt/mise}"
-  export PATH="/opt/hermes/.venv/bin:/opt/hermes/npm-global/bin:/opt/mise/shims:$PATH"
+  export PATH="$HERMES_VENV/bin:$AGENT_HOME/npm-global/bin:/opt/mise/shims:$PATH"
 fi
 
 if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
@@ -106,8 +145,10 @@ export SYNC_INCLUDE_ENV="${SYNC_INCLUDE_ENV:-1}"
 export BACKUP_BUCKET_NAME="${BACKUP_BUCKET_NAME:-hermes-backup}"
 BACKUP_BUCKET="$BACKUP_BUCKET_NAME"
 BACKUP_DATASET="${BACKUP_DATASET_NAME:-hermes-backup}"
-CF_PROXY_ENV_FILE="/tmp/hermes-cloudflare-proxy.env"
-GEMINI_PROXY_ENV_FILE="/tmp/hermes-gemini-proxy.env"
+# Per-user state dir, not shared /tmp: root-created files (mode 600) are unreadable by the service user.
+CF_PROXY_ENV_FILE="$HERMES_HOME/cloudflare-proxy.env"
+GEMINI_PROXY_ENV_FILE="$HERMES_HOME/gemini-proxy.env"
+export CF_PROXY_ENV_FILE GEMINI_PROXY_ENV_FILE
 
 export HERMES_HOME
 export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
@@ -133,6 +174,10 @@ if [ -n "${GATEWAY_TOKEN:-}" ]; then
 fi
 
 # ── Setup state dirs ──────────────────────────────────────────────────
+# Snapshot empty state before mkdir/cp — restore guard below needs "was dir
+# empty on entry", not "is dir non-empty" (always true post-seed).
+HERMES_STATE_PREEXISTING=false
+[ -n "$(ls -A "$HERMES_HOME" 2>/dev/null)" ] && HERMES_STATE_PREEXISTING=true
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,plugins,webui}
 mkdir -p "$WORKSPACE_HOME"
 
@@ -154,9 +199,12 @@ if [ -d "$HERMES_HOME/logs" ]; then
 fi
 
 mkdir -p "$HERMES_HOME/.local/bin"
-ln -sfn /opt/hermes/.venv/bin/hermes "$HERMES_HOME/.local/bin/hermes"
+ln -sfn "$HERMES_VENV/bin/hermes" "$HERMES_HOME/.local/bin/hermes"
 
-if mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null &&
+if [ -z "$WORKSPACE_LINK" ]; then
+  export HOME="$AGENT_HOME"
+  debug "Home: $HOME (flat layout)"
+elif mkdir -p "$(dirname "$WORKSPACE_LINK")" 2>/dev/null &&
   { [ -L "$WORKSPACE_LINK" ] || [ ! -e "$WORKSPACE_LINK" ]; } &&
   ln -sfn "$AGENT_HOME" "$WORKSPACE_LINK" 2>/dev/null; then
   export HOME="$WORKSPACE_LINK"
@@ -184,7 +232,7 @@ if [ ! -L "${HOME}/.hermes/plugins" ] && ! [ "${HOME}/.hermes" -ef "$HERMES_HOME
   ln -sfn "$HERMES_HOME/plugins" "${HOME}/.hermes/plugins"
 fi
 
-# ── Shell capture wrappers (no restore dep — runs before restore) ─────────────
+# ── Shell capture wrappers (before restore) ──────────────────────────────
 if [ ! -f "$STARTUP_FILE" ]; then
   mkdir -p "$(dirname "$STARTUP_FILE")"
   cat >"$STARTUP_FILE" <<'STARTUP'
@@ -210,7 +258,7 @@ cat >"$HOME/.profile" <<'PROFILE'
 PROFILE
 echo "Shell capture wrappers ready."
 
-# ── zsh interactive config (no restore dep — runs before restore) ──────────
+# ── Zsh interactive config (before restore) ────────────────────────────
 {
   printf 'HISTFILE=%q\n' "$HERMES_HOME/.zsh_history"
   printf 'HERMES_PERSONAL_ZSHRC=%q\n' "$HERMES_HOME/zshrc"
@@ -223,12 +271,30 @@ echo "zsh interactive config ready ($HOME/.zshrc)."
 # ── Restore state from HF Storage Bucket (async, gated) ───────────────
 HERMES_RESTORE_PID=""
 if [ -n "${HF_TOKEN:-}" ]; then
-  echo "Restoring Hermes state from HF bucket ${BACKUP_BUCKET}/${AGENT_NAME}"
-  python3 "$APP_DIR/sync/hermes-sync.py" restore &
-  HERMES_RESTORE_PID=$!
+  # ponytail: VPS has a persistent disk — local state IS canonical. Restoring the
+  # bucket OVER live local files makes hf-xet fail (EACCES overwriting open files)
+  # and can revert changes since the last sync. Only restore to seed a FRESH box.
+  if [ "$PLATFORM" = "vps" ] && [ "$HERMES_STATE_PREEXISTING" = true ]; then
+    echo "Skipping HF restore (platform: vps, local state present — local is canonical)."
+  else
+    echo "Restoring Hermes state from HF bucket ${BACKUP_BUCKET}/${AGENT_NAME}"
+    python3 "$APP_DIR/sync/hermes-sync.py" restore &
+    HERMES_RESTORE_PID=$!
+  fi
 else
   echo "HF_TOKEN not set - bucket persistence is disabled."
 fi
+
+# ── Ensure runtime CLIs (excluded from backup — reinstall if missing) ─────
+# These tools' home-dir copies (.local/share/claude, .npm-global) and bun's
+# cache (.bun) are excluded from sync. Reinstall on boot when absent; no-op
+# when the image/installer already provides them.
+ensure_runtime_tools() {
+  command -v claude   >/dev/null 2>&1 || { curl -fsSL https://claude.ai/install.sh | bash; } >/dev/null 2>&1 || true
+  command -v opencode >/dev/null 2>&1 || npm install -g opencode-ai@latest >/dev/null 2>&1 || true
+  command -v agent-browser >/dev/null 2>&1 || { npm install -g agent-browser@latest && agent-browser install; } >/dev/null 2>&1 || true
+}
+ensure_runtime_tools &
 
 # ── Cloudflare proxy (optional — HF only) ──
 CLOUDFLARE_WORKERS_TOKEN="${CLOUDFLARE_WORKERS_TOKEN:-${CLOUDFLARE_API_TOKEN:-}}"
@@ -239,7 +305,7 @@ if [ "$PLATFORM" = "hf" ]; then
     echo "Preparing Cloudflare Telegram proxy"
     python3 "$APP_DIR/network/cloudflare-proxy-setup.py" || true
     if [ -f "$CF_PROXY_ENV_FILE" ]; then
-      . "$CF_PROXY_ENV_FILE"
+      . "$CF_PROXY_ENV_FILE" || warn "could not source $CF_PROXY_ENV_FILE (continuing)"
     fi
   fi
 
@@ -272,7 +338,7 @@ if [ ! -f "$HERMES_HOME/memories/.backups/initial-seed.done" ]; then
   done
   touch "$HERMES_HOME/memories/.backups/initial-seed.done"
 fi
-HERMES_BIN="/opt/hermes/.venv/bin/hermes"
+HERMES_BIN="$HERMES_VENV/bin/hermes"
 
 # ── Taste capture: seed preference files before cron block ───────────────────
 for tf in TASTE-ledger.md TASTE-signals.md; do
@@ -550,13 +616,25 @@ if [ -n "${GEMINI_BASE_URL:-}" ] || [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
 fi
 
 # ── Set model + provider via CLI (more reliable than YAML) ───────────────────
-hermes config set model "$MODEL_FOR_CONFIG" &&
-  debug "✓ Model: $MODEL_FOR_CONFIG" ||
-  warn "Failed to set model (continuing)"
+# An empty env model must not overwrite the model the restore just brought back:
+# on a migrated box the model lives in the restored config, not in the env. Push
+# env-derived values only; otherwise adopt the restored model so the box boots.
+if [ -n "$MODEL_FOR_CONFIG" ]; then
+  hermes config set model "$MODEL_FOR_CONFIG" &&
+    debug "✓ Model: $MODEL_FOR_CONFIG" ||
+    warn "Failed to set model (continuing)"
 
-hermes config set provider "$PROVIDER_FOR_CONFIG" &&
-  debug "✓ Provider: $PROVIDER_FOR_CONFIG" ||
-  warn "Failed to set provider (continuing)"
+  hermes config set provider "$PROVIDER_FOR_CONFIG" &&
+    debug "✓ Provider: $PROVIDER_FOR_CONFIG" ||
+    warn "Failed to set provider (continuing)"
+else
+  # config.yaml is machine-written (yaml.safe_dump): a model value is one bare or
+  # quoted token — strip only quotes. ponytail: widen if values ever gain spaces.
+  MODEL_FOR_CONFIG="$(sed -n 's/^model:[[:space:]]*//p' "$HERMES_HOME/config.yaml" 2>/dev/null | head -1 | tr -d "\"'")"
+  [ -n "$MODEL_FOR_CONFIG" ] &&
+    debug "No env model — keeping restored model: $MODEL_FOR_CONFIG" ||
+    warn "No model in env and none in restored config (continuing)"
+fi
 
 # ── Custom endpoint support ────────────────────────────────────────────────────
 if [ -n "${CUSTOM_BASE_URL:-}" ]; then
@@ -570,7 +648,9 @@ fi
 
 # ── Terminal/workspace ────────────────────────────────────────────────────────
 mkdir -p "$WORKSPACE_HOME"
-if [ -e "$WORKSPACE_LINK" ] && [ ! -L "$WORKSPACE_LINK" ]; then
+if [ -z "$WORKSPACE_LINK" ]; then
+  AGENT_WORKSPACE="$WORKSPACE_HOME"
+elif [ -e "$WORKSPACE_LINK" ] && [ ! -L "$WORKSPACE_LINK" ]; then
   warn "$WORKSPACE_LINK exists as a real path; using $WORKSPACE_HOME"
   AGENT_WORKSPACE="$WORKSPACE_HOME"
 else
@@ -640,7 +720,7 @@ log ""
 log "╔════════════════════════════════════════════════════════════════╗"
 log "║  Summary                                                       ║"
 log "╚════════════════════════════════════════════════════════════════╝"
-log "Primary UI : ${PRIMARY_UI:-webui}"
+[ "$PLATFORM" != "vps" ] && log "Primary UI : ${PRIMARY_UI:-webui}"
 log "Model      : ${MODEL_FOR_CONFIG:-unset}"
 log "Provider   : ${PROVIDER_FOR_CONFIG:-unset}"
 log "Agent      : $AGENT_NAME"
@@ -656,8 +736,8 @@ fi
 [ -n "${CLOUDFLARE_PROXY_URL:-}" ] &&
   log "CF Proxy   : ${CLOUDFLARE_PROXY_URL}"
 log ""
-log "Router     : 0.0.0.0:${PUBLIC_PORT}"
-log "WebUI      : 127.0.0.1:${WEBUI_PORT}"
+[ "$PLATFORM" != "vps" ] && log "Router     : 0.0.0.0:${PUBLIC_PORT}"
+[ "$PLATFORM" != "vps" ] && log "WebUI      : 127.0.0.1:${WEBUI_PORT}"
 log "Gateway    : 127.0.0.1:${GATEWAY_API_PORT}"
 log "Dashboard  : 127.0.0.1:${DASHBOARD_PORT}"
 log ""
@@ -742,8 +822,8 @@ graceful_shutdown() {
 trap graceful_shutdown SIGTERM SIGINT
 
 # ── WebUI runtime env (static; exported once) ─────────────────────────
-export HERMES_WEBUI_AGENT_DIR="/opt/hermes"
-export HERMES_WEBUI_PYTHON="/opt/hermes/.venv/bin/python"
+export HERMES_WEBUI_AGENT_DIR="$APP_DIR"
+export HERMES_WEBUI_PYTHON="$HERMES_VENV/bin/python"
 export HERMES_WEBUI_HOST="127.0.0.1"
 export HERMES_WEBUI_PORT
 export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-$HERMES_HOME/webui}"
@@ -755,7 +835,11 @@ GATEWAY_READY_TIMEOUT="${GATEWAY_READY_TIMEOUT:-90}"
 WEBUI_READY_TIMEOUT="${WEBUI_READY_TIMEOUT:-60}"
 
 # ── Initial boot ──────────────────────────────────────────────────────
-start_health
+# Health server is the HF single-port router (:7861). VPS services are
+# directly accessible on their own ports — no proxy layer needed.
+if [ "$PLATFORM" != "vps" ]; then
+  start_health
+fi
 
 if [ -n "${WEBHOOK_URL:-}" ]; then
   "$APP_DIR/boot/notify-webhook.py" >/dev/null 2>&1 &
@@ -780,7 +864,7 @@ if [ "$PLATFORM" != "vps" ] && [ -f "$HERMES_HOME/.env" ]; then
 fi
 
 start_gateway
-start_webui
+[ "$PLATFORM" != "vps" ] && start_webui
 
 if ! wait_port_ready "$GATEWAY_API_PORT" "$GATEWAY_READY_TIMEOUT" "$GATEWAY_PID"; then
   echo ""
@@ -797,11 +881,13 @@ log "✓ Model configured: $MODEL_FOR_CONFIG"
 
 start_sync_loop
 
-if wait_port_ready "$WEBUI_PORT" "$WEBUI_READY_TIMEOUT" "$WEBUI_PID"; then
-  echo "Hermes WebUI is up."
-else
-  echo "Warning: Hermes WebUI not ready within ${WEBUI_READY_TIMEOUT}s. Last 20 log lines:"
-  tail -20 "$HERMES_HOME/logs/webui.log" || true
+if [ "$PLATFORM" != "vps" ]; then
+  if wait_port_ready "$WEBUI_PORT" "$WEBUI_READY_TIMEOUT" "$WEBUI_PID"; then
+    echo "Hermes WebUI is up."
+  else
+    echo "Warning: Hermes WebUI not ready within ${WEBUI_READY_TIMEOUT}s. Last 20 log lines:"
+    tail -20 "$HERMES_HOME/logs/webui.log" || true
+  fi
 fi
 
 # ── Wait for background Telegram webhook clear (must finish before polling) ────
