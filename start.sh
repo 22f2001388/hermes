@@ -107,6 +107,7 @@ export BACKUP_BUCKET_NAME="${BACKUP_BUCKET_NAME:-hermes-backup}"
 BACKUP_BUCKET="$BACKUP_BUCKET_NAME"
 BACKUP_DATASET="${BACKUP_DATASET_NAME:-hermes-backup}"
 CF_PROXY_ENV_FILE="/tmp/hermes-cloudflare-proxy.env"
+GEMINI_PROXY_ENV_FILE="/tmp/hermes-gemini-proxy.env"
 
 export HERMES_HOME
 export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
@@ -536,6 +537,17 @@ wait "${HERMES_UPDATE_PID:-}" 2>/dev/null || true
 # ── Idempotent API-key sync (pools + singular provider keys) ────────────────
 debug "Syncing API keys (idempotent)"
 python3 "$APP_DIR/sync/keys-sync.py" || warn "key sync failed (continuing)"
+
+# ── Gemini geo-block proxy (any platform) ─────────────────────────────────────
+# Google rejects Gemini calls from datacenter/VPS IPs. Must run AFTER keys-sync
+# so freshly (re-)added credentials get repointed too.
+if [ -n "${GEMINI_BASE_URL:-}" ] || [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
+  python3 "$APP_DIR/network/gemini-proxy-setup.py" || warn "gemini proxy setup failed (continuing)"
+  if [ -f "$GEMINI_PROXY_ENV_FILE" ]; then
+    . "$GEMINI_PROXY_ENV_FILE" || warn "could not source $GEMINI_PROXY_ENV_FILE (continuing)"
+    log "Gemini via  : ${GEMINI_BASE_URL:-direct}"
+  fi
+fi
 
 # ── Set model + provider via CLI (more reliable than YAML) ───────────────────
 hermes config set model "$MODEL_FOR_CONFIG" &&

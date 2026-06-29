@@ -24,7 +24,7 @@ SINGULAR_PROVIDERS = {
     "DASHSCOPE_API_KEY": "alibaba",
     "GMI_API_KEY": "gmi",
     "TOKENHUB_API_KEY": "tencent-tokenhub",
-    "GROQ_API_KEY": "groq",
+    "GROQ_API_KEY": "custom:groq",
     "GOOGLE_API_KEY": "google",
     "OPENCODE_API_KEY": "opencode",
     "CLAUDE_CODE_OAUTH_TOKEN": "claude-code",
@@ -57,6 +57,21 @@ POOL_VARS = {
 
 HERMES_HOME = Path(os.environ["HERMES_HOME"])
 STATE_FILE = HERMES_HOME / ".hermes" / "keys-state.json"
+
+# Providers without a native hermes_cli entry — `hermes auth add` needs a
+# providers.<name> config.yaml entry to resolve a custom slug's base_url.
+CUSTOM_PROVIDERS = {
+    "groq": "https://api.groq.com/openai/v1",
+}
+for _name, _base_url in CUSTOM_PROVIDERS.items():
+    if subprocess.run(
+        ["hermes", "config", "set", f"providers.{_name}.api", _base_url],
+        capture_output=True,
+    ).returncode != 0:
+        sys.stderr.write(
+            f"WARN: `hermes config set providers.{_name}.api` failed; "
+            f"`hermes auth add custom:{_name}` will fail until it succeeds\n"
+        )
 
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 try:
@@ -165,17 +180,20 @@ def add_pool(provider, keys):
 
 
 def add_single(slug, value):
-    """A failed singular add still works via env auto-discovery (var already
-    exported), so it counts as success — record the hash to avoid re-adding."""
+    """Add one credential. A NATIVE slug's failed add still works via env
+    auto-discovery (the var is exported and hermes reads it at runtime), so it
+    counts as success — record the hash. A `custom:<name>` slug has NO such
+    runtime fallback, so a failed add must NOT record the hash: return the real
+    result to retry next boot (same contract as add_pool)."""
+    is_custom = slug.startswith("custom:")
     rc = subprocess.run(
         ["hermes", "auth", "add", slug, "--type", "api-key", "--api-key", value],
         capture_output=True,
     ).returncode
     if rc != 0:
-        sys.stderr.write(
-            f"WARN: `hermes auth add {slug}` failed (rc={rc}); relying on env auto-discovery\n"
-        )
-    return True
+        detail = "retry next boot" if is_custom else "relying on env auto-discovery"
+        sys.stderr.write(f"WARN: `hermes auth add {slug}` failed (rc={rc}); {detail}\n")
+    return rc == 0 or not is_custom
 
 
 synced = 0
