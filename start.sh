@@ -181,31 +181,39 @@ else
   echo "HF_TOKEN not set - bucket persistence is disabled."
 fi
 
-# ── Cloudflare proxy (optional) ──
+# ── Cloudflare proxy (optional — HF/Render only) ──
 CLOUDFLARE_WORKERS_TOKEN="${CLOUDFLARE_WORKERS_TOKEN:-${CLOUDFLARE_API_TOKEN:-}}"
 export CLOUDFLARE_WORKERS_TOKEN
-if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
-  export CLOUDFLARE_PROXY_DEBUG="${CLOUDFLARE_PROXY_DEBUG:-false}"
-  echo "Preparing Cloudflare Telegram proxy"
-  python3 "$APP_DIR/network/cloudflare-proxy-setup.py" || true
-  if [ -f "$CF_PROXY_ENV_FILE" ]; then
-    . "$CF_PROXY_ENV_FILE"
+if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
+  if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
+    export CLOUDFLARE_PROXY_DEBUG="${CLOUDFLARE_PROXY_DEBUG:-false}"
+    echo "Preparing Cloudflare Telegram proxy"
+    python3 "$APP_DIR/network/cloudflare-proxy-setup.py" || true
+    if [ -f "$CF_PROXY_ENV_FILE" ]; then
+      . "$CF_PROXY_ENV_FILE"
+    fi
   fi
+
+  if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
+    echo "Preparing Cloudflare Keepalive worker"
+    python3 "$APP_DIR/network/cloudflare-keepalive-setup.py" || true
+  fi
+else
+  echo "Skipping Cloudflare proxy (platform: $PLATFORM, not HF/Render)"
 fi
 
-if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
-  echo "Preparing Cloudflare Keepalive worker"
-  python3 "$APP_DIR/network/cloudflare-keepalive-setup.py" || true
-fi
-
-if [ -n "$HERMES_RESTORE_PID" ]; then
-  wait "$HERMES_RESTORE_PID" || true
-  echo "HF restore complete."
+if [ "$PLATFORM" = "hf" ] || [ "$PLATFORM" = "render" ]; then
+  if [ -n "$HERMES_RESTORE_PID" ]; then
+    wait "$HERMES_RESTORE_PID" || true
+    echo "HF restore complete."
+  fi
+else
+  echo "Restore running in background (platform: $PLATFORM, not blocking startup)"
 fi
 
 # ── Memory-OS: seed consolidation skill + cron job (additive, idempotent) ──
 if [ -d "$APP_DIR/skills" ]; then
-  cp -a "$APP_DIR/skills/." "$HERMES_HOME/skills/"
+  cp -r "$APP_DIR/skills/." "$HERMES_HOME/skills/" 2>/dev/null || true
   echo "Assistant skills seeded to $HERMES_HOME/skills/."
 fi
 mkdir -p "$HERMES_HOME/memories/longterm" "$HERMES_HOME/memories/.backups"
